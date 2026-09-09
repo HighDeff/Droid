@@ -58,7 +58,9 @@ describe("allowlisted execution", () => {
       success: true,
       message: "safe",
     }));
-    const repository = new ExecutionStateRepository(execute);
+    const repository = new ExecutionStateRepository(execute, {
+      mode: "memory",
+    });
     const execution = repository.create(plan({ type: "screenshot" }));
     await repository.start(execution, plan({ type: "screenshot" }));
     expect(execution.status).toBe("completed");

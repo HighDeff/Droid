@@ -9,7 +9,7 @@ const source = {
 
 describe("RecordingRepository", () => {
   it("keeps recordings isolated and creates preview-only artifacts", () => {
-    const repository = new RecordingRepository();
+    const repository = new RecordingRepository({ mode: "memory" });
     const recording = repository.start("browser", "Checkout review", source);
     const event: RecordedAction = {
       id: "event_1",
@@ -34,7 +34,7 @@ describe("RecordingRepository", () => {
   });
 
   it("rejects appends after stopping by preserving the stopped snapshot", () => {
-    const repository = new RecordingRepository();
+    const repository = new RecordingRepository({ mode: "memory" });
     const recording = repository.start("browser", "Stopped recording", source);
     const stopped = repository.stop(recording.id);
 

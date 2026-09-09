@@ -5,6 +5,7 @@ import type {
   ActionExecutionResult,
   ExecutionTimelineEvent,
 } from "@shared/assistant";
+import { DurableStore, type StorageOptions } from "./durable-store";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) =>
@@ -32,7 +33,8 @@ const defaultExecutor: SafeActionExecutor = async (action) => {
 };
 
 export class ExecutionStateRepository {
-  private readonly executions = new Map<string, AssistantExecution>();
+  private readonly store: DurableStore;
+  private executions = new Map<string, AssistantExecution>();
   private readonly controls = new Map<
     string,
     { paused: boolean; cancelled: boolean }
@@ -40,9 +42,26 @@ export class ExecutionStateRepository {
 
   constructor(
     private readonly executeAction: SafeActionExecutor = defaultExecutor,
-  ) {}
+    options: StorageOptions = {},
+  ) {
+    this.store = new DurableStore(options);
+    this.load();
+  }
+
+  private load() {
+    this.executions = new Map(
+      this.store
+        .readCollection<AssistantExecution>("executions")
+        .map((execution) => [execution.id, execution]),
+    );
+  }
+
+  private persist() {
+    this.store.writeCollection("executions", [...this.executions.values()]);
+  }
 
   get(id: string): AssistantExecution | undefined {
+    this.load();
     return this.executions.get(id);
   }
 
@@ -58,11 +77,13 @@ export class ExecutionStateRepository {
       results: [],
     };
     this.executions.set(execution.id, execution);
+    this.persist();
     this.controls.set(execution.id, { paused: false, cancelled: false });
     return execution;
   }
 
   pause(executionId: string): AssistantExecution | undefined {
+    this.load();
     const execution = this.executions.get(executionId);
     const control = this.controls.get(executionId);
     if (
@@ -74,10 +95,12 @@ export class ExecutionStateRepository {
     control.paused = true;
     execution.status = "paused";
     this.addEvent(execution, "info", "Execution paused");
+    this.persist();
     return execution;
   }
 
   cancel(executionId: string): AssistantExecution | undefined {
+    this.load();
     const execution = this.executions.get(executionId);
     const control = this.controls.get(executionId);
     if (
@@ -91,10 +114,14 @@ export class ExecutionStateRepository {
     execution.status = "cancelled";
     execution.completedAt = now();
     this.addEvent(execution, "info", "Execution cancelled");
+    this.persist();
     return execution;
   }
 
   async start(execution: AssistantExecution, plan: AssistantPlan) {
+    this.load();
+    const storedExecution = this.executions.get(execution.id);
+    if (storedExecution) execution = storedExecution;
     if (execution.status !== "pending" && execution.status !== "paused")
       return execution;
     const control = this.controls.get(execution.id);
@@ -103,6 +130,7 @@ export class ExecutionStateRepository {
     execution.status = "running";
     execution.startedAt ??= now();
     this.addEvent(execution, "started", "Execution started");
+    this.persist();
 
     const deadline = Date.now() + EXECUTION_TIMEOUT_MS;
     for (
@@ -127,6 +155,7 @@ export class ExecutionStateRepository {
         `Running step ${index + 1}`,
         plan.steps[index].id,
       );
+      this.persist();
       try {
         const result = await Promise.race([
           this.executeAction(action),
@@ -138,6 +167,7 @@ export class ExecutionStateRepository {
           ),
         ]);
         execution.results.push(result);
+        this.persist();
         if (!result.success) return this.fail(execution, result.message);
         this.addEvent(
           execution,
@@ -156,6 +186,7 @@ export class ExecutionStateRepository {
     execution.status = "completed";
     execution.completedAt = now();
     this.addEvent(execution, "completed", "Execution completed");
+    this.persist();
     return execution;
   }
 
@@ -164,6 +195,7 @@ export class ExecutionStateRepository {
     execution.error = error;
     execution.completedAt = now();
     this.addEvent(execution, "failed", error);
+    this.persist();
     return execution;
   }
 

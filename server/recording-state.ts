@@ -5,19 +5,39 @@ import type {
   RecordingPlanDraft,
   RecordingSourceMetadata,
 } from "@shared/recordings";
+import { DurableStore, type StorageOptions } from "./durable-store";
 
 const now = () => new Date().toISOString();
 const createId = (prefix: string) =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
 export class RecordingRepository {
-  private readonly recordings = new Map<string, RecordedSession>();
+  private readonly store: DurableStore;
+  private recordings = new Map<string, RecordedSession>();
+
+  constructor(options: StorageOptions = {}) {
+    this.store = new DurableStore(options);
+    this.load();
+  }
+
+  private load() {
+    this.recordings = new Map(
+      this.store
+        .readCollection<RecordedSession>("recordings")
+        .map((recording) => [recording.id, recording]),
+    );
+  }
+
+  private persist() {
+    this.store.writeCollection("recordings", [...this.recordings.values()]);
+  }
 
   start(
     sessionId: string,
     name: string,
     source: RecordingSourceMetadata,
   ): RecordedSession {
+    this.load();
     const startedAt = now();
     const recording: RecordedSession = {
       id: createId("recording"),
@@ -29,10 +49,12 @@ export class RecordingRepository {
       events: [],
     };
     this.recordings.set(recording.id, recording);
+    this.persist();
     return recording;
   }
 
   stop(id: string): RecordedSession | undefined {
+    this.load();
     const recording = this.recordings.get(id);
     if (!recording) return undefined;
     const updated = {
@@ -41,24 +63,29 @@ export class RecordingRepository {
       stoppedAt: recording.stoppedAt ?? now(),
     };
     this.recordings.set(id, updated);
+    this.persist();
     return updated;
   }
 
   append(id: string, events: RecordedAction[]): RecordedSession | undefined {
+    this.load();
     const recording = this.recordings.get(id);
     if (!recording || recording.status !== "recording") return undefined;
     const updated = { ...recording, events: [...recording.events, ...events] };
     this.recordings.set(id, updated);
+    this.persist();
     return updated;
   }
 
   list(sessionId?: string): RecordedSession[] {
+    this.load();
     return [...this.recordings.values()]
       .filter((recording) => !sessionId || recording.sessionId === sessionId)
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }
 
   get(id: string): RecordedSession | undefined {
+    this.load();
     return this.recordings.get(id);
   }
 

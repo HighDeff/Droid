@@ -42,6 +42,15 @@ pnpm dev
 
 See [QUICKSTART.md](QUICKSTART.md) for detailed quick start guide.
 
+### Assistant data storage
+
+Assistant sessions, captures, instructions, plans, executions, recordings,
+workflows, checkpoints, and progress are stored in a versioned JSON document by
+default. Set `ASSISTANT_STORAGE_PATH` to choose its location. Writes are
+atomic, and startup rejects malformed or newer documents instead of silently
+discarding data. Set `ASSISTANT_STORAGE_MODE=memory` only when an explicit
+non-durable fallback is desired (for example, isolated tests).
+
 ## Documentation
 
 - **[Quick Start](QUICKSTART.md)** - Get running in 5 minutes

@@ -3,7 +3,7 @@ import { AssistantStateRepository } from "./assistant-state";
 
 describe("AssistantStateRepository", () => {
   it("creates sessions and isolates resources by session", () => {
-    const repository = new AssistantStateRepository();
+    const repository = new AssistantStateRepository({ mode: "memory" });
     const first = repository.createSession({
       project: {
         id: "project-one",
@@ -37,7 +37,7 @@ describe("AssistantStateRepository", () => {
   });
 
   it("updates and deletes a resource only for its owning session", () => {
-    const repository = new AssistantStateRepository();
+    const repository = new AssistantStateRepository({ mode: "memory" });
     const session = repository.createSession({
       project: {
         id: "project",
@@ -73,7 +73,7 @@ describe("AssistantStateRepository", () => {
   });
 
   it("cascades resource cleanup when a session is deleted", () => {
-    const repository = new AssistantStateRepository();
+    const repository = new AssistantStateRepository({ mode: "memory" });
     const session = repository.createSession({
       project: {
         id: "project",
@@ -95,7 +95,7 @@ describe("AssistantStateRepository", () => {
   });
 
   it("stores plans within their owning session and preserves approval state", () => {
-    const repository = new AssistantStateRepository();
+    const repository = new AssistantStateRepository({ mode: "memory" });
     const session = repository.createSession({
       project: {
         id: "project",
@@ -135,7 +135,7 @@ describe("AssistantStateRepository", () => {
   });
 
   it("stores workflow scheduling state and isolates it by session", () => {
-    const repository = new AssistantStateRepository();
+    const repository = new AssistantStateRepository({ mode: "memory" });
     const session = repository.createSession({
       project: {
         id: "project",

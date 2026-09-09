@@ -9,6 +9,7 @@ import {
   ScreenshotCapture,
   UserInstruction,
 } from "@shared/assistant";
+import { DurableStore, type StorageOptions } from "./durable-store";
 
 type ResourceMap = {
   captures: ScreenshotCapture;
@@ -25,7 +26,8 @@ const createId = (prefix: string) =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
 export class AssistantStateRepository {
-  private readonly sessions = new Map<string, AssistantSession>();
+  private readonly store: DurableStore;
+  private sessions = new Map<string, AssistantSession>();
   private readonly resources: {
     [K in keyof ResourceMap]: Map<string, ResourceMap[K]>;
   } = {
@@ -38,11 +40,47 @@ export class AssistantStateRepository {
     workflows: new Map(),
   };
 
+  constructor(options: StorageOptions = {}) {
+    this.store = new DurableStore(options);
+    this.load();
+  }
+
+  private load() {
+    this.sessions = new Map(
+      this.store
+        .readCollection<AssistantSession>("sessions")
+        .map((item) => [item.id, item]),
+    );
+    for (const kind of Object.keys(this.resources) as Array<
+      keyof ResourceMap
+    >) {
+      this.loadResource(kind);
+    }
+  }
+
+  private loadResource<K extends keyof ResourceMap>(kind: K) {
+    const values = this.store.readCollection<ResourceMap[K]>(kind);
+    this.resources[kind] = new Map(
+      values.map((item) => [item.id, item]),
+    ) as (typeof this.resources)[K];
+  }
+
+  private persist() {
+    this.store.writeCollection("sessions", [...this.sessions.values()]);
+    for (const kind of Object.keys(this.resources) as Array<
+      keyof ResourceMap
+    >) {
+      this.store.writeCollection(kind, [...this.resources[kind].values()]);
+    }
+  }
+
   listSessions(): AssistantSession[] {
+    this.load();
     return [...this.sessions.values()];
   }
 
   getSession(id: string): AssistantSession | undefined {
+    this.load();
     return this.sessions.get(id);
   }
 
@@ -57,6 +95,7 @@ export class AssistantStateRepository {
       updatedAt: timestamp,
     };
     this.sessions.set(session.id, session);
+    this.persist();
     return session;
   }
 
@@ -70,6 +109,7 @@ export class AssistantStateRepository {
     if (!session) return undefined;
     const updated = { ...session, ...updates, updatedAt: now() };
     this.sessions.set(id, updated);
+    this.persist();
     return updated;
   }
 
@@ -79,6 +119,7 @@ export class AssistantStateRepository {
       for (const [resourceId, resource] of resourceMap) {
         if (resource.sessionId === id) resourceMap.delete(resourceId);
       }
+      this.persist();
     }
     return true;
   }
@@ -87,6 +128,7 @@ export class AssistantStateRepository {
     kind: K,
     sessionId: string,
   ): ResourceMap[K][] {
+    this.load();
     return [...this.resources[kind].values()].filter(
       (resource) => resource.sessionId === sessionId,
     );
@@ -97,6 +139,7 @@ export class AssistantStateRepository {
     id: string,
     sessionId: string,
   ): ResourceMap[K] | undefined {
+    this.load();
     const resource = this.resources[kind].get(id);
     return resource?.sessionId === sessionId ? resource : undefined;
   }
@@ -106,6 +149,7 @@ export class AssistantStateRepository {
     sessionId: string,
     input: unknown,
   ): ResourceMap[K] {
+    this.load();
     const timestamp = now();
     const inputRecord = input as Record<string, unknown>;
     const resource = {
@@ -139,6 +183,7 @@ export class AssistantStateRepository {
         : {}),
     } as ResourceMap[K];
     this.resources[kind].set(resource.id, resource);
+    this.persist();
     return resource;
   }
 
@@ -148,6 +193,7 @@ export class AssistantStateRepository {
     sessionId: string,
     updates: unknown,
   ): ResourceMap[K] | undefined {
+    this.load();
     const resource = this.getResource(kind, id, sessionId);
     if (!resource) return undefined;
     const updated = {
@@ -158,6 +204,7 @@ export class AssistantStateRepository {
         : {}),
     } as ResourceMap[K];
     this.resources[kind].set(id, updated);
+    this.persist();
     return updated;
   }
 
@@ -166,9 +213,11 @@ export class AssistantStateRepository {
     id: string,
     sessionId: string,
   ): boolean {
-    return this.getResource(kind, id, sessionId)
-      ? this.resources[kind].delete(id)
-      : false;
+    const exists = this.getResource(kind, id, sessionId);
+    if (!exists) return false;
+    const deleted = this.resources[kind].delete(id);
+    this.persist();
+    return deleted;
   }
 
   addAnnotation(
