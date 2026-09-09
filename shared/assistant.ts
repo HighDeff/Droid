@@ -13,6 +13,14 @@ export type ProgressKind =
   | "accomplishment"
   | "obstacle"
   | "suggestion";
+export type PlanApprovalState =
+  | "proposed"
+  | "needs_clarification"
+  | "approved"
+  | "rejected";
+export type PlanStepStatus = "proposed" | "edited" | "approved";
+export type PlanRiskLevel = "low" | "medium" | "high";
+export type TimingHint = "now" | "soon" | "scheduled" | "when_ready";
 
 export interface AssistantProject {
   id: string;
@@ -134,6 +142,59 @@ export interface UserInstruction {
   priority?: number;
   createdAt: string;
   completedAt?: string;
+}
+
+export interface InstructionClarification {
+  id: string;
+  question: string;
+  reason: string;
+  required: boolean;
+  answer?: string;
+}
+
+export interface PlanPrerequisite {
+  id: string;
+  description: string;
+  satisfied: boolean;
+  source?: string;
+}
+
+export interface PlannedStep {
+  id: string;
+  order: number;
+  title: string;
+  description: string;
+  status: PlanStepStatus;
+  timing: TimingHint;
+  confidence: number;
+  prerequisites: string[];
+  risks: string[];
+}
+
+export interface PlanRisk {
+  id: string;
+  description: string;
+  level: PlanRiskLevel;
+  mitigation?: string;
+}
+
+export interface AssistantPlan {
+  id: string;
+  sessionId: string;
+  instruction: UserInstruction;
+  sourceCaptureIds: string[];
+  sourceNoteIds: string[];
+  clarifications: InstructionClarification[];
+  steps: PlannedStep[];
+  prerequisites: PlanPrerequisite[];
+  risks: PlanRisk[];
+  timing: TimingHint;
+  confidence: number;
+  approvalState: PlanApprovalState;
+  createdAt: string;
+  updatedAt: string;
+  approvedAt?: string;
+  rejectedAt?: string;
 }
 
 export interface OperationPack {

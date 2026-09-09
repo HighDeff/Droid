@@ -22,6 +22,7 @@ import { spawn } from "child_process";
 import { assistantRouter } from "./routes/assistant";
 import { assistantSourcesRouter } from "./routes/assistant-sources";
 import { analysisRouter } from "./routes/analysis";
+import { assistantPlansRouter } from "./routes/assistant-plans";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +36,7 @@ export function createServer() {
   app.use("/api/assistant", assistantRouter);
   app.use("/api/assistant/sources", assistantSourcesRouter);
   app.use("/api/assistant/analysis", analysisRouter);
+  app.use("/api/assistant/plans", assistantPlansRouter);
 
   // Example API routes
   app.get("/api/ping", (_req, res) => {

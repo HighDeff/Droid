@@ -1,5 +1,6 @@
 import {
   Annotation,
+  AssistantPlan,
   AssistantSession,
   OperationPack,
   ProgressEntry,
@@ -14,6 +15,7 @@ type ResourceMap = {
   operationPacks: OperationPack;
   progress: ProgressEntry;
   savedStates: SavedState;
+  plans: AssistantPlan;
 };
 
 const now = () => new Date().toISOString();
@@ -30,6 +32,7 @@ export class AssistantStateRepository {
     operationPacks: new Map(),
     progress: new Map(),
     savedStates: new Map(),
+    plans: new Map(),
   };
 
   listSessions(): AssistantSession[] {
@@ -174,6 +177,31 @@ export class AssistantStateRepository {
         { ...annotation, id: createId("annotation") },
       ],
     });
+  }
+
+  listPlans(sessionId: string): AssistantPlan[] {
+    return [...this.resources.plans.values()]
+      .filter((plan) => plan.sessionId === sessionId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  getPlan(id: string, sessionId: string): AssistantPlan | undefined {
+    return this.getResource("plans", id, sessionId);
+  }
+
+  createPlan(
+    sessionId: string,
+    plan: Omit<AssistantPlan, "id" | "sessionId" | "createdAt" | "updatedAt">,
+  ): AssistantPlan {
+    return this.createResource("plans", sessionId, plan);
+  }
+
+  updatePlan(
+    id: string,
+    sessionId: string,
+    updates: Partial<AssistantPlan>,
+  ): AssistantPlan | undefined {
+    return this.updateResource("plans", id, sessionId, updates);
   }
 }
 

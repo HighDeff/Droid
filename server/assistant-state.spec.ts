@@ -93,4 +93,44 @@ describe("AssistantStateRepository", () => {
     expect(repository.listResource("instructions", session.id)).toHaveLength(0);
     expect(repository.deleteSession(session.id)).toBe(false);
   });
+
+  it("stores plans within their owning session and preserves approval state", () => {
+    const repository = new AssistantStateRepository();
+    const session = repository.createSession({
+      project: {
+        id: "project",
+        name: "Project",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      status: "active",
+      goals: [],
+      savedStateIds: [],
+    });
+    const plan = repository.createPlan(session.id, {
+      instruction: {
+        id: "instruction",
+        sessionId: session.id,
+        text: "Review the screen",
+        createdAt: new Date().toISOString(),
+      },
+      sourceCaptureIds: [],
+      sourceNoteIds: [],
+      clarifications: [],
+      steps: [],
+      prerequisites: [],
+      risks: [],
+      timing: "when_ready",
+      confidence: 0.7,
+      approvalState: "proposed",
+    });
+
+    expect(repository.listPlans(session.id)).toHaveLength(1);
+    expect(
+      repository.updatePlan(plan.id, session.id, {
+        approvalState: "approved",
+      })?.approvalState,
+    ).toBe("approved");
+    expect(repository.getPlan(plan.id, "other-session")).toBeUndefined();
+  });
 });

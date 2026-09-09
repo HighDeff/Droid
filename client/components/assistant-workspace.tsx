@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { CaptureSourcePanel } from "./capture-source-panel";
+import { InstructionPlanningPanel } from "@/components/instruction-planning-panel";
 
 export type AssistantView =
   | "workspace"
@@ -396,6 +397,7 @@ export function AssistantWorkspace({
                     </div>
                   </div>
                 </div>
+                <InstructionPlanningPanel />
                 <div className="mt-6 space-y-5">
                   <CaptureSourcePanel />
                   <div>
