@@ -11,6 +11,10 @@ import Dashboard from "./pages/Dashboard";
 import Automation from "./pages/automation/index";
 import { AIChat } from "@/components/ai-chat";
 import NotFound from "./pages/NotFound";
+import Workspace from "./pages/Workspace";
+import Captures from "./pages/Captures";
+import Operations from "./pages/Operations";
+import Accomplishments from "./pages/Accomplishments";
 
 const queryClient = new QueryClient();
 
@@ -25,6 +29,10 @@ const App = () => (
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/dual-ai" element={<Dashboard initialTab="dual-ai" />} />
           <Route path="/automation" element={<Automation />} />
+          <Route path="/workspace" element={<Workspace />} />
+          <Route path="/captures" element={<Captures />} />
+          <Route path="/operations" element={<Operations />} />
+          <Route path="/accomplishments" element={<Accomplishments />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
