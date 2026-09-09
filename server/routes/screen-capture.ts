@@ -19,10 +19,7 @@ export const captureDesktopFrame = async (): Promise<{
     };
   }
 
-  const pythonScript = path.join(
-    __dirname,
-    "../../python-service/capture.py",
-  );
+  const pythonScript = path.join(__dirname, "../../python-service/capture.py");
   const pythonCmd =
     process.env.PYTHON_CMD ||
     (process.platform === "win32" ? "python" : "python3");
@@ -64,7 +61,10 @@ export const captureDesktopFrame = async (): Promise<{
           finish(JSON.parse(stdoutData.trim()));
           return;
         } catch {
-          finish({ success: false, error: "Failed to parse screen capture response" });
+          finish({
+            success: false,
+            error: "Failed to parse screen capture response",
+          });
           return;
         }
       }
