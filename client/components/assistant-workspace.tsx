@@ -33,6 +33,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
+import { CaptureSourcePanel } from "./capture-source-panel";
 
 export type AssistantView =
   | "workspace"
@@ -396,6 +397,7 @@ export function AssistantWorkspace({
                   </div>
                 </div>
                 <div className="mt-6 space-y-5">
+                  <CaptureSourcePanel />
                   <div>
                     <div className="mb-2 flex items-center justify-between">
                       <p className="text-xs font-medium text-slate-300">

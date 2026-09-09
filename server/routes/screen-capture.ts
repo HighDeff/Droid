@@ -5,6 +5,84 @@ import path from "path";
 // In-memory cache of the latest real desktop screen frame synced from the user's browser or upload
 export let latestSyncedRealFrame: string | null = null;
 
+export const captureDesktopFrame = async (): Promise<{
+  success: boolean;
+  imageData?: string;
+  method?: string;
+  error?: string;
+}> => {
+  if (latestSyncedRealFrame) {
+    return {
+      success: true,
+      imageData: latestSyncedRealFrame,
+      method: "real_desktop_stream",
+    };
+  }
+
+  const pythonScript = path.join(
+    __dirname,
+    "../../python-service/capture.py",
+  );
+  const pythonCmd =
+    process.env.PYTHON_CMD ||
+    (process.platform === "win32" ? "python" : "python3");
+
+  return new Promise((resolve) => {
+    const python = spawn(pythonCmd, [pythonScript], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdoutData = "";
+    let stderrData = "";
+    let settled = false;
+    const finish = (result: {
+      success: boolean;
+      imageData?: string;
+      method?: string;
+      error?: string;
+    }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    python.stdout.on("data", (data) => {
+      stdoutData += data.toString();
+    });
+    python.stderr.on("data", (data) => {
+      stderrData += data.toString();
+    });
+    python.on("error", (error) =>
+      finish({
+        success: false,
+        error: `Failed to spawn python (${pythonCmd}): ${error.message}`,
+      }),
+    );
+    python.on("close", (code) => {
+      if (settled) return;
+      if (code === 0 && stdoutData) {
+        try {
+          finish(JSON.parse(stdoutData.trim()));
+          return;
+        } catch {
+          finish({ success: false, error: "Failed to parse screen capture response" });
+          return;
+        }
+      }
+      finish({
+        success: false,
+        error: stderrData || "Python screen capture service exited with error",
+      });
+    });
+
+    setTimeout(() => {
+      if (!settled) {
+        if (!python.killed) python.kill();
+        finish({ success: false, error: "Screen capture timeout (5s)" });
+      }
+    }, 5000);
+  });
+};
+
 export const handleSyncRealFrame = async (
   req: Request,
   res: Response,
@@ -38,93 +116,7 @@ export const handleCaptureScreen = async (
   res: Response,
 ): Promise<void> => {
   try {
-    // If a real live desktop frame was synced from browser/upload, return it directly
-    if (latestSyncedRealFrame) {
-      res.json({
-        success: true,
-        imageData: latestSyncedRealFrame,
-        method: "real_desktop_stream",
-      });
-      return;
-    }
-
-    // Otherwise attempt Python service capture
-    const pythonScript = path.join(
-      __dirname,
-      "../../python-service/capture.py",
-    );
-    const pythonCmd =
-      process.env.PYTHON_CMD ||
-      (process.platform === "win32" ? "python" : "python3");
-
-    const python = spawn(pythonCmd, [pythonScript], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    let stdoutData = "";
-    let stderrData = "";
-    let responded = false;
-
-    const sendResponse = (data: any) => {
-      if (!responded) {
-        responded = true;
-        res.json(data);
-      }
-    };
-
-    python.stdout.on("data", (data) => {
-      stdoutData += data.toString();
-    });
-
-    python.stderr.on("data", (data) => {
-      stderrData += data.toString();
-    });
-
-    let errorHandled = false;
-    python.on("error", (err) => {
-      errorHandled = true;
-      sendResponse({
-        success: false,
-        error: `Failed to spawn python (${pythonCmd}): ${err.message}`,
-        hint: "Set PYTHON_CMD env or ensure python is in PATH; fallback synthetic frame used client-side.",
-      });
-    });
-
-    python.on("close", (code) => {
-      if (responded) return;
-
-      if (!errorHandled && code === 0 && stdoutData) {
-        try {
-          const result = JSON.parse(stdoutData.trim());
-          sendResponse(result);
-        } catch (e) {
-          sendResponse({
-            success: false,
-            error: "Failed to parse Python service response",
-            details: stdoutData,
-          });
-        }
-      } else if (!errorHandled) {
-        sendResponse({
-          success: false,
-          error: "Python screen capture service exited with error",
-          stderr: stderrData,
-          code,
-        });
-      }
-    });
-
-    const timeout = setTimeout(() => {
-      if (!python.killed) python.kill();
-      sendResponse({
-        success: false,
-        error: "Screen capture timeout (5s)",
-      });
-    }, 5000);
-
-    python.on("close", () => {
-      clearTimeout(timeout);
-    });
+    res.json(await captureDesktopFrame());
   } catch (error) {
     res.json({
       success: false,

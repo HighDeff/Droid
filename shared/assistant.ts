@@ -117,3 +117,26 @@ export interface SavedState {
   snapshot: Record<string, unknown>;
   createdAt: string;
 }
+
+export type CaptureSourceKind = "desktop" | "android";
+export type CaptureSourceConnectionState =
+  | "connected"
+  | "disconnected"
+  | "error";
+
+export interface CaptureSource {
+  id: string;
+  kind: CaptureSourceKind;
+  name: string;
+  detail?: string;
+  connectionState: CaptureSourceConnectionState;
+  lastFrameAt?: string;
+  error?: string;
+  deviceId?: string;
+}
+
+export interface CaptureSourceFrame {
+  sourceId: string;
+  imageData: string;
+  capturedAt: string;
+}
