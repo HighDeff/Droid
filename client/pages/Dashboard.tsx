@@ -117,6 +117,10 @@ import { ProgramLinkerAttacher } from "@/components/program-linker-attacher";
 import { VirtualDesktopMirrorStudio } from "@/components/virtual-desktop-mirror-studio";
 import { AICodeEditorBackupStudio } from "@/components/ai-code-editor-backup-studio";
 import { GapAgentVerifierHub } from "@/components/gap-agent-verifier-hub";
+import {
+  CaptureAnnotationWorkspace,
+  mockCaptureFrames,
+} from "@/components/capture-annotation";
 export default function Dashboard({
   initialTab,
 }: { initialTab?: string } = {}) {
@@ -1343,6 +1347,10 @@ export default function Dashboard({
               <Package className="w-3 h-3" />
               Pack Builder
             </TabsTrigger>
+            <TabsTrigger value="capture" className="h-7 text-xs gap-1">
+              <Camera className="w-3 h-3" />
+              Capture
+            </TabsTrigger>
             <TabsTrigger value="entities" className="h-7 text-xs gap-1">
               <Crosshair className="w-3 h-3" />
               Entities
@@ -1938,6 +1946,9 @@ export default function Dashboard({
             <ScreenshotPackBuilderStudio
               currentLiveScreenshot={aiLiveUrl || screenshotUrl}
             />
+          </TabsContent>
+          <TabsContent value="capture" className="space-y-6">
+            <CaptureAnnotationWorkspace frames={mockCaptureFrames} />
           </TabsContent>
           <TabsContent value="entities" className="space-y-6">
             <EntitiesRadarPanel
