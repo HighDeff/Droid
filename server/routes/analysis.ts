@@ -2,6 +2,7 @@ import { RequestHandler, Router } from "express";
 import { z } from "zod";
 import type { FrameAnalysis, RegionOfInterest } from "@shared/assistant";
 import { analysisRepository } from "../analysis-state";
+import { recognizeWithProviders } from "../ocr-provider";
 
 const requestSchema = z
   .object({
@@ -27,7 +28,7 @@ const fullFrameRegion = (): RegionOfInterest => ({
 
 export const analysisRouter = Router();
 
-analysisRouter.post("/", ((req, res) => {
+analysisRouter.post("/", (async (req, res) => {
   const parsed = requestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -38,19 +39,25 @@ analysisRouter.post("/", ((req, res) => {
   }
 
   const { captureId, sessionId, imageRef, imageData, source } = parsed.data;
+  const ocr = await recognizeWithProviders({ imageData, imageRef });
+  const hasOcr = Boolean(ocr.result);
   const analysis: Omit<FrameAnalysis, "id"> = {
     captureId,
     sessionId,
     source: source ?? (imageRef ? "image-reference" : "captured-image"),
-    status: "fallback",
-    provider: "deterministic-fallback",
-    confidence: 0,
-    ocrText: [],
+    status: hasOcr ? "completed" : "fallback",
+    provider: ocr.result?.provider ?? "deterministic-fallback",
+    confidence: ocr.result?.confidence ?? 0,
+    ocrText: ocr.result?.text ?? [],
     detectedElements: [],
-    regionsOfInterest: [fullFrameRegion()],
+    regionsOfInterest: ocr.result?.regions.length
+      ? ocr.result.regions
+      : [fullFrameRegion()],
     notes: [
-      "No local OCR integration is available in this installation.",
-      "OCR was not attempted; empty text is not a successful OCR result.",
+      hasOcr
+        ? `OCR completed with ${ocr.result?.provider}.`
+        : "No configured OCR provider was available; deterministic fallback was used.",
+      ...ocr.errors.map((error) => `OCR provider unavailable: ${error}`),
       imageRef
         ? "The image reference was recorded for downstream analysis."
         : "The captured image data was accepted without persisting the image.",

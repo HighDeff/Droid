@@ -184,7 +184,11 @@ export type AnalysisStatus =
   | "fallback"
   | "failed";
 
-export type AnalysisProvider = "local-ocr" | "deterministic-fallback";
+export type AnalysisProvider =
+  | "tesseract"
+  | "remote-ocr"
+  | "local-ocr"
+  | "deterministic-fallback";
 
 export interface CapturedFrameReference {
   captureId?: string;

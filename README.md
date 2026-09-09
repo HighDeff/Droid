@@ -149,6 +149,17 @@ OLLAMA_ENDPOINT=https://remote.quantumpass.io/ollama/api/chat
 OLLAMA_MODEL=qwen2.5vl:7b
 ```
 
+#### OCR providers
+
+The assistant analysis endpoint uses real OCR when an integration is available. It
+tries `OCR_REMOTE_URL` first (sending `{ "imageData": "..." }` with an optional
+Bearer token), then the fixed `tesseract` executable on the server PATH. Set
+`OCR_TIMEOUT_MS` to bound either provider. Install Tesseract separately and
+ensure the `tesseract` command is available; the server never executes a
+user-supplied command. If all providers fail or no image data is supplied, the
+response is explicitly marked `fallback` with provider
+`deterministic-fallback`, zero OCR text, and provider error notes.
+
 ### Step 5: Start Development Server
 
 ```bash
