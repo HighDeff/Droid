@@ -19,6 +19,7 @@ import {
 } from "./routes/dual-ai-pipeline";
 import { centralLogHub } from "./log-hub";
 import { spawn } from "child_process";
+import { assistantRouter } from "./routes/assistant";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +30,7 @@ export function createServer() {
   app.use(cors());
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+  app.use("/api/assistant", assistantRouter);
 
   // Example API routes
   app.get("/api/ping", (_req, res) => {
