@@ -314,6 +314,54 @@ export interface SavedState {
   createdAt: string;
 }
 
+export type WorkflowStatus = "active" | "paused" | "completed" | "archived";
+export type WorkflowResumeMode = "manual" | "scheduled";
+
+export interface WorkflowSchedule {
+  enabled: boolean;
+  nextRunAt?: string;
+  timezone?: string;
+}
+
+export interface PauseResumePolicy {
+  pauseOnError: boolean;
+  allowResume: boolean;
+  resumeMode: WorkflowResumeMode;
+}
+
+export interface WorkflowTaskProgress {
+  taskId: string;
+  title: string;
+  status: AssistantItemStatus;
+  completed: number;
+  total: number;
+}
+
+export interface WorkflowGoalProgress {
+  goalId: string;
+  title: string;
+  status: AssistantItemStatus;
+  completed: number;
+  total: number;
+  tasks: WorkflowTaskProgress[];
+}
+
+export interface AssistantWorkflow {
+  id: string;
+  sessionId: string;
+  name: string;
+  description?: string;
+  status: WorkflowStatus;
+  operationPackIds: string[];
+  checkpointIds: string[];
+  repeatCount: number;
+  schedule: WorkflowSchedule;
+  pauseResumePolicy: PauseResumePolicy;
+  goals: WorkflowGoalProgress[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type CaptureSourceKind = "desktop" | "android";
 export type CaptureSourceConnectionState =
   | "connected"

@@ -2,6 +2,7 @@ import {
   Annotation,
   AssistantPlan,
   AssistantSession,
+  AssistantWorkflow,
   OperationPack,
   ProgressEntry,
   SavedState,
@@ -16,6 +17,7 @@ type ResourceMap = {
   progress: ProgressEntry;
   savedStates: SavedState;
   plans: AssistantPlan;
+  workflows: AssistantWorkflow;
 };
 
 const now = () => new Date().toISOString();
@@ -33,6 +35,7 @@ export class AssistantStateRepository {
     progress: new Map(),
     savedStates: new Map(),
     plans: new Map(),
+    workflows: new Map(),
   };
 
   listSessions(): AssistantSession[] {
@@ -131,7 +134,9 @@ export class AssistantStateRepository {
             })),
           }
         : {}),
-      ...(kind === "operationPacks" ? { updatedAt: timestamp } : {}),
+      ...(kind === "operationPacks" || kind === "workflows"
+        ? { updatedAt: timestamp }
+        : {}),
     } as ResourceMap[K];
     this.resources[kind].set(resource.id, resource);
     return resource;
@@ -148,7 +153,9 @@ export class AssistantStateRepository {
     const updated = {
       ...resource,
       ...(updates as Record<string, unknown>),
-      ...(kind === "operationPacks" ? { updatedAt: now() } : {}),
+      ...(kind === "operationPacks" || kind === "workflows"
+        ? { updatedAt: now() }
+        : {}),
     } as ResourceMap[K];
     this.resources[kind].set(id, updated);
     return updated;
@@ -202,6 +209,34 @@ export class AssistantStateRepository {
     updates: Partial<AssistantPlan>,
   ): AssistantPlan | undefined {
     return this.updateResource("plans", id, sessionId, updates);
+  }
+
+  listWorkflows(sessionId: string): AssistantWorkflow[] {
+    return [...this.resources.workflows.values()]
+      .filter((workflow) => workflow.sessionId === sessionId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  getWorkflow(id: string, sessionId: string): AssistantWorkflow | undefined {
+    return this.getResource("workflows", id, sessionId);
+  }
+
+  createWorkflow(
+    sessionId: string,
+    workflow: Omit<
+      AssistantWorkflow,
+      "id" | "sessionId" | "createdAt" | "updatedAt"
+    >,
+  ): AssistantWorkflow {
+    return this.createResource("workflows", sessionId, workflow);
+  }
+
+  updateWorkflow(
+    id: string,
+    sessionId: string,
+    updates: Partial<AssistantWorkflow>,
+  ): AssistantWorkflow | undefined {
+    return this.updateResource("workflows", id, sessionId, updates);
   }
 }
 

@@ -82,6 +82,7 @@ See [QUICKSTART.md](QUICKSTART.md) for detailed quick start guide.
 ## Technology Stack
 
 ### Frontend
+
 - **React 18** - UI framework
 - **TypeScript** - Type safety
 - **TailwindCSS** - Styling
@@ -90,18 +91,21 @@ See [QUICKSTART.md](QUICKSTART.md) for detailed quick start guide.
 - **Lucide Icons** - Icon library
 
 ### Backend
+
 - **Express.js** - API server
 - **TypeScript** - Type safety
 - **CORS** - Cross-origin support
 - **Vite** - Build tool and dev server
 
 ### Automation
+
 - **Python 3.8+** - Automation runtime
 - **pyautogui** - Screen capture and mouse/keyboard control
 - **Pillow** - Image processing
 - **Ollama** - AI vision model hosting
 
 ### Deployment
+
 - **Netlify** - Recommended static hosting
 - **Vercel** - Alternative edge deployment
 - **Docker** - Container deployment
@@ -281,6 +285,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
 **Problem**: Dashboard shows "Waiting for AI analysis..."
 
 **Solutions**:
+
 1. Check browser permissions for screen capture
 2. On macOS: Grant app permissions in System Preferences
 3. Ensure screen is not locked
@@ -291,6 +296,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
 **Problem**: "Failed to connect to Ollama endpoint"
 
 **Solutions**:
+
 1. Verify Ollama is running: `ollama serve`
 2. Check endpoint URL in dashboard settings
 3. Test connection: `curl https://remote.quantumpass.io/ollama/api/chat`
@@ -301,6 +307,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
 **Problem**: "Task execution timeout"
 
 **Solutions**:
+
 1. Ensure Python 3.8+ is installed
 2. Verify Python dependencies: `pip list`
 3. Check pyautogui installation: `python3 -c "import pyautogui"`
@@ -420,3 +427,11 @@ This tool is provided for educational and personal use. Users are responsible fo
 **Ready to automate?** [Start with the Quick Start Guide](QUICKSTART.md)
 
 Made with ❤️ by the GameAI Team
+
+# Workflow persistence
+
+The assistant workflow APIs under `/api/assistant/workflows` currently use the
+existing in-memory repository abstraction. Workflow definitions, operation
+packs, checkpoints, schedules, and progress are scoped to an assistant session,
+but restart persistence is not yet guaranteed. No workflow is automatically
+executed by the workflow library UI.
