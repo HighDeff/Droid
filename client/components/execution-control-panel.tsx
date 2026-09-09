@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AssistantExecution, AssistantPlan } from "@shared/assistant";
-import { CheckCircle2, Pause, Play, Square } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Pause, Play, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -81,6 +81,44 @@ export function ExecutionControlPanel({ plan }: { plan: AssistantPlan }) {
     }
   };
 
+  const approveAlternate = async () => {
+    if (!execution?.pendingApproval?.alternateStepId) return;
+    setError("");
+    try {
+      const response = await request<{ execution: AssistantExecution }>(
+        `/api/assistant/execution/${execution.id}/approve-alternate`,
+        {
+          method: "POST",
+          body: JSON.stringify({ confirmation: true }),
+        },
+      );
+      setExecution(response.execution);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Could not select alternate",
+      );
+    }
+  };
+
+  const approvePending = async () => {
+    if (!execution?.pendingApproval) return;
+    setError("");
+    try {
+      const response = await request<{ execution: AssistantExecution }>(
+        `/api/assistant/execution/${execution.id}/approve`,
+        {
+          method: "POST",
+          body: JSON.stringify({ confirmation: true }),
+        },
+      );
+      setExecution(response.execution);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Could not approve execution",
+      );
+    }
+  };
+
   const canExecute =
     plan.approvalState === "approved" &&
     plan.steps.every((step) => step.action);
@@ -128,6 +166,35 @@ export function ExecutionControlPanel({ plan }: { plan: AssistantPlan }) {
             {Math.min(execution.currentStep, execution.totalSteps)} /{" "}
             {execution.totalSteps}
           </p>
+          {execution.pendingApproval && (
+            <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3">
+              <div className="flex items-start gap-2 text-xs text-amber-200">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  <strong>Approval required:</strong>{" "}
+                  {execution.pendingApproval.reason}
+                </span>
+              </div>
+              {execution.pendingApproval.alternateStepId && (
+                <Button
+                  onClick={() => void approveAlternate()}
+                  size="sm"
+                  className="mt-3 bg-amber-300 text-slate-950 hover:bg-amber-200"
+                >
+                  Approve alternate step
+                </Button>
+              )}
+              {!execution.pendingApproval.alternateStepId && (
+                <Button
+                  onClick={() => void approvePending()}
+                  size="sm"
+                  className="mt-3 bg-amber-300 text-slate-950 hover:bg-amber-200"
+                >
+                  Approve and continue
+                </Button>
+              )}
+            </div>
+          )}
           <div className="mt-3 flex gap-2">
             {execution.status === "paused" && (
               <Button
@@ -167,6 +234,38 @@ export function ExecutionControlPanel({ plan }: { plan: AssistantPlan }) {
               </p>
             ))}
           </div>
+          {execution.evidence.length > 0 && (
+            <div className="mt-3 rounded-lg border border-cyan-300/10 bg-cyan-300/5 p-3">
+              <p className="text-xs font-medium text-cyan-200">
+                Evidence frames
+              </p>
+              <div className="mt-2 space-y-2">
+                {execution.evidence.map((evidence) => (
+                  <div key={evidence.id} className="text-xs text-slate-400">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>
+                        Attempt {evidence.attempt} ·{" "}
+                        {evidence.verification.status}
+                      </span>
+                      <span className="text-slate-600">
+                        {new Date(evidence.capturedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-slate-500">
+                      {evidence.verification.reason}
+                    </p>
+                    {evidence.capture?.imageData && (
+                      <img
+                        src={evidence.capture.imageData}
+                        alt={`Evidence for ${evidence.stepId}, attempt ${evidence.attempt}`}
+                        className="mt-2 max-h-28 rounded border border-white/10 object-contain"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
       {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}

@@ -74,11 +74,62 @@ export type ExecutionStatus =
   | "pending"
   | "running"
   | "paused"
+  | "awaiting_approval"
   | "completed"
   | "cancelled"
   | "failed";
 
-export type ExecutionEventStatus = "started" | "completed" | "failed" | "info";
+export type ExecutionEventStatus =
+  | "started"
+  | "completed"
+  | "failed"
+  | "info"
+  | "capture"
+  | "analysis"
+  | "verification"
+  | "retry"
+  | "alternate"
+  | "approval";
+
+export type VerificationKind =
+  | "region-present"
+  | "text-present"
+  | "element-present"
+  | "confidence-threshold";
+
+export interface StepVerification {
+  kind: VerificationKind;
+  region?: RegionOfInterest;
+  text?: string;
+  elementLabel?: string;
+  minConfidence?: number;
+}
+
+export interface RetryPolicy {
+  maxAttempts: number;
+  backoffMs?: number;
+  alternateStepId?: string;
+}
+
+export interface AdaptiveExecutionPolicy {
+  captureBefore?: boolean;
+  verification?: StepVerification;
+  retry?: RetryPolicy;
+}
+
+export interface ExecutionEvidence {
+  id: string;
+  stepId: string;
+  attempt: number;
+  capturedAt: string;
+  capture?: CapturedFrameReference;
+  analysis?: FrameAnalysis;
+  verification: {
+    status: "passed" | "failed" | "uncertain";
+    reason: string;
+    confidence?: number;
+  };
+}
 
 export interface ExecutionTimelineEvent {
   id: string;
@@ -87,6 +138,7 @@ export interface ExecutionTimelineEvent {
   message: string;
   stepId?: string;
   result?: unknown;
+  evidenceId?: string;
 }
 
 export interface ActionExecutionResult {
@@ -108,6 +160,13 @@ export interface AssistantExecution {
   error?: string;
   timeline: ExecutionTimelineEvent[];
   results: ActionExecutionResult[];
+  evidence: ExecutionEvidence[];
+  pendingApproval?: {
+    stepId: string;
+    reason: string;
+    alternateStepId?: string;
+    retryStep?: boolean;
+  };
 }
 
 export interface AssistantProject {
@@ -262,6 +321,7 @@ export interface PlannedStep {
   prerequisites: string[];
   risks: string[];
   action?: AllowlistedAction;
+  adaptive?: AdaptiveExecutionPolicy;
 }
 
 export interface PlanRisk {

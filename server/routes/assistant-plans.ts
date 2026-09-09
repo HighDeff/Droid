@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import type {
+  AllowlistedAction,
   AssistantPlan,
   InstructionClarification,
   PlanPrerequisite,
@@ -9,7 +10,10 @@ import type {
   TimingHint,
 } from "@shared/assistant";
 import { assistantStateRepository } from "../assistant-state";
-import { allowlistedActionSchema } from "./assistant-execution";
+import {
+  adaptiveExecutionPolicySchema,
+  allowlistedActionSchema,
+} from "./assistant-execution";
 
 const timingHint = z.enum(["now", "soon", "scheduled", "when_ready"]);
 const planStep = z.object({
@@ -23,6 +27,7 @@ const planStep = z.object({
   prerequisites: z.array(z.string()),
   risks: z.array(z.string()),
   action: allowlistedActionSchema.optional(),
+  adaptive: adaptiveExecutionPolicySchema.optional(),
 });
 
 const createPlanBody = z.object({
@@ -204,6 +209,14 @@ assistantPlansRouter.put("/:planId", (req, res) => {
     confidence: step.confidence ?? 0,
     prerequisites: step.prerequisites ?? [],
     risks: step.risks ?? [],
+    action: step.action
+      ? (allowlistedActionSchema.parse(step.action) as AllowlistedAction)
+      : undefined,
+    adaptive: step.adaptive
+      ? (adaptiveExecutionPolicySchema.parse(
+          step.adaptive,
+        ) as PlannedStep["adaptive"])
+      : undefined,
   }));
   const updated = assistantStateRepository.updatePlan(
     req.params.planId,

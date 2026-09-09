@@ -3,9 +3,12 @@ import type {
   AssistantExecution,
   AssistantPlan,
   ActionExecutionResult,
+  ExecutionEvidence,
   ExecutionTimelineEvent,
+  PlannedStep,
 } from "@shared/assistant";
 import { DurableStore, type StorageOptions } from "./durable-store";
+import { verifyObservation, type Observation } from "./visual-verification";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) =>
@@ -17,10 +20,12 @@ export const EXECUTION_TIMEOUT_MS = 30_000;
 export type SafeActionExecutor = (
   action: AllowlistedAction,
 ) => Promise<ActionExecutionResult>;
+export type ObservationProvider = (
+  step: PlannedStep,
+  attempt: number,
+) => Promise<Observation>;
 
 const defaultExecutor: SafeActionExecutor = async (action) => {
-  // This adapter deliberately performs no shell, code, or process execution.
-  // Integrations can replace it with a narrowly scoped device helper.
   if (action.type === "wait") {
     await new Promise((resolve) => setTimeout(resolve, action.durationMs));
   }
@@ -43,6 +48,7 @@ export class ExecutionStateRepository {
   constructor(
     private readonly executeAction: SafeActionExecutor = defaultExecutor,
     options: StorageOptions = {},
+    private readonly observe: ObservationProvider = async () => ({}),
   ) {
     this.store = new DurableStore(options);
     this.load();
@@ -62,6 +68,7 @@ export class ExecutionStateRepository {
 
   get(id: string): AssistantExecution | undefined {
     this.load();
+  get(id: string): AssistantExecution | undefined {
     return this.executions.get(id);
   }
 
@@ -75,6 +82,7 @@ export class ExecutionStateRepository {
       totalSteps: plan.steps.length,
       timeline: [],
       results: [],
+      evidence: [],
     };
     this.executions.set(execution.id, execution);
     this.persist();
@@ -128,6 +136,7 @@ export class ExecutionStateRepository {
     if (!control) throw new Error("Execution control state not found");
     control.paused = false;
     execution.status = "running";
+    execution.pendingApproval = undefined;
     execution.startedAt ??= now();
     this.addEvent(execution, "started", "Execution started");
     this.persist();
@@ -141,11 +150,13 @@ export class ExecutionStateRepository {
       while (control.paused && !control.cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
+
       if (control.cancelled) return execution;
-      if (Date.now() > deadline) {
+      if (Date.now() > deadline)
         return this.fail(execution, "Execution timed out");
-      }
-      const action = plan.steps[index].action;
+
+      const step = plan.steps[index];
+      const action = step.action;
       if (!action)
         return this.fail(execution, `Step ${index + 1} has no approved action`);
       execution.currentStep = index + 1;
@@ -157,25 +168,56 @@ export class ExecutionStateRepository {
       );
       this.persist();
       try {
-        const result = await Promise.race([
-          this.executeAction(action),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error("Action timed out")),
-              ACTION_TIMEOUT_MS,
-            ),
-          ),
-        ]);
+        if (step.adaptive?.captureBefore) {
+          const evidence = await this.captureAndVerify(execution, step, 0);
+          if (evidence.verification.status === "uncertain") {
+            return this.awaitApproval(execution, step, evidence, true);
+          }
+        }
+
+        let result = await this.runAction(action);
         execution.results.push(result);
         this.persist();
         if (!result.success) return this.fail(execution, result.message);
-        this.addEvent(
-          execution,
-          "completed",
-          result.message,
-          plan.steps[index].id,
-          result,
-        );
+        this.addEvent(execution, "completed", result.message, step.id, result);
+
+        const verification = step.adaptive?.verification;
+        if (verification) {
+          const maxAttempts = step.adaptive.retry?.maxAttempts ?? 1;
+          let attempt = 1;
+          while (true) {
+            const evidence = await this.captureAndVerify(
+              execution,
+              step,
+              attempt,
+            );
+            if (evidence.verification.status === "passed") break;
+            if (evidence.verification.status === "uncertain") {
+              return this.awaitApproval(execution, step, evidence, false);
+            }
+            if (attempt >= maxAttempts) {
+              const alternateId = step.adaptive.retry?.alternateStepId;
+              return alternateId
+                ? this.selectAlternate(execution, step, alternateId)
+                : this.fail(execution, evidence.verification.reason);
+            }
+            attempt += 1;
+            this.addEvent(
+              execution,
+              "retry",
+              `Verification failed; retrying step ${index + 1} (attempt ${attempt}/${maxAttempts}).`,
+              step.id,
+              undefined,
+              execution.evidence[execution.evidence.length - 1]?.id,
+            );
+            const delay = Math.min(step.adaptive.retry?.backoffMs ?? 0, 5_000);
+            if (delay > 0)
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            result = await this.runAction(action);
+            execution.results.push(result);
+            if (!result.success) return this.fail(execution, result.message);
+          }
+        }
       } catch (error) {
         return this.fail(
           execution,
@@ -183,10 +225,150 @@ export class ExecutionStateRepository {
         );
       }
     }
+
     execution.status = "completed";
     execution.completedAt = now();
     this.addEvent(execution, "completed", "Execution completed");
     this.persist();
+    return execution;
+  }
+
+  async approveAlternate(executionId: string, plan: AssistantPlan) {
+    const execution = this.executions.get(executionId);
+    const pending = execution?.pendingApproval;
+    if (!execution || !pending?.alternateStepId) return undefined;
+    const currentIndex = plan.steps.findIndex(
+      (step) => step.id === pending.stepId,
+    );
+    const alternate = plan.steps.find(
+      (step) => step.id === pending.alternateStepId,
+    );
+    if (currentIndex < 0 || !alternate) return undefined;
+    const alternatePlan = {
+      ...plan,
+      steps: plan.steps.map((step, index) =>
+        index === currentIndex ? { ...alternate, order: step.order } : step,
+      ),
+    };
+    execution.currentStep = currentIndex;
+    execution.status = "paused";
+    return this.start(execution, alternatePlan);
+  }
+
+  async approvePending(executionId: string, plan: AssistantPlan) {
+    const execution = this.executions.get(executionId);
+    const pending = execution?.pendingApproval;
+    if (!execution || !pending) return undefined;
+    const stepIndex = plan.steps.findIndex(
+      (step) => step.id === pending.stepId,
+    );
+    if (stepIndex < 0) return undefined;
+    execution.currentStep = pending.retryStep ? stepIndex : stepIndex + 1;
+    execution.status = "paused";
+    return this.start(execution, plan);
+  }
+
+  private runAction(action: AllowlistedAction) {
+    return Promise.race([
+      this.executeAction(action),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Action timed out")),
+          ACTION_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+  }
+
+  private async captureAndVerify(
+    execution: AssistantExecution,
+    step: PlannedStep,
+    attempt: number,
+  ): Promise<ExecutionEvidence> {
+    this.addEvent(
+      execution,
+      "capture",
+      `Requesting fresh capture for attempt ${attempt}.`,
+      step.id,
+    );
+    const observation = await this.observe(step, attempt);
+    this.addEvent(
+      execution,
+      "analysis",
+      "Fresh capture analysis received.",
+      step.id,
+    );
+    const verification = step.adaptive?.verification
+      ? verifyObservation(step.adaptive.verification, observation)
+      : observation.analysis
+        ? { status: "passed" as const, reason: "Fresh analysis recorded." }
+        : {
+            status: "uncertain" as const,
+            reason:
+              "Fresh capture was requested but no analysis was provided; approval is required.",
+          };
+    const evidence: ExecutionEvidence = {
+      id: id("evidence"),
+      stepId: step.id,
+      attempt,
+      capturedAt: now(),
+      capture: observation.capture,
+      analysis: observation.analysis,
+      verification,
+    };
+    execution.evidence.push(evidence);
+    this.addEvent(
+      execution,
+      "verification",
+      verification.reason,
+      step.id,
+      verification,
+      evidence.id,
+    );
+    return evidence;
+  }
+
+  private awaitApproval(
+    execution: AssistantExecution,
+    step: PlannedStep,
+    evidence: ExecutionEvidence,
+    retryStep: boolean,
+  ) {
+    execution.status = "awaiting_approval";
+    execution.pendingApproval = {
+      stepId: step.id,
+      reason: evidence.verification.reason,
+      alternateStepId: step.adaptive?.retry?.alternateStepId,
+      retryStep,
+    };
+    this.addEvent(
+      execution,
+      "approval",
+      `Paused for approval: ${evidence.verification.reason}`,
+      step.id,
+      undefined,
+      evidence.id,
+    );
+    return execution;
+  }
+
+  private selectAlternate(
+    execution: AssistantExecution,
+    step: PlannedStep,
+    alternateStepId: string,
+  ) {
+    execution.status = "awaiting_approval";
+    execution.pendingApproval = {
+      stepId: step.id,
+      reason: "Verification remained false after the bounded retry limit.",
+      alternateStepId,
+    };
+    this.addEvent(
+      execution,
+      "alternate",
+      `Alternate step ${alternateStepId} is available for explicit approval.`,
+      step.id,
+    );
     return execution;
   }
 
@@ -205,6 +387,7 @@ export class ExecutionStateRepository {
     message: string,
     stepId?: string,
     result?: unknown,
+    evidenceId?: string,
   ) {
     execution.timeline.push({
       id: id("event"),
@@ -213,6 +396,7 @@ export class ExecutionStateRepository {
       message,
       stepId,
       result,
+      evidenceId,
     });
   }
 }
