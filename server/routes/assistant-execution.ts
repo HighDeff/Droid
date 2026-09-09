@@ -33,6 +33,40 @@ const action = z.discriminatedUnion("type", [
 ]);
 
 export const allowlistedActionSchema = action;
+const region = z.object({
+  id: z.string().min(1),
+  label: z.string().optional(),
+  x: z.number().finite().min(0).max(1e6),
+  y: z.number().finite().min(0).max(1e6),
+  width: z.number().finite().positive().max(1e6),
+  height: z.number().finite().positive().max(1e6),
+  confidence: z.number().min(0).max(1).optional(),
+});
+const adaptive = z.object({
+  captureBefore: z.boolean().optional(),
+  verification: z
+    .object({
+      kind: z.enum([
+        "region-present",
+        "text-present",
+        "element-present",
+        "confidence-threshold",
+      ]),
+      region: region.optional(),
+      text: z.string().max(500).optional(),
+      elementLabel: z.string().max(200).optional(),
+      minConfidence: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
+  retry: z
+    .object({
+      maxAttempts: z.number().int().min(1).max(3),
+      backoffMs: z.number().int().min(0).max(5000).optional(),
+      alternateStepId: z.string().min(1).optional(),
+    })
+    .optional(),
+});
+export const adaptiveExecutionPolicySchema = adaptive;
 
 const startBody = z.object({
   planId: z.string().min(1),
@@ -65,12 +99,31 @@ assistantExecutionRouter.post("/", (req, res) => {
   const validatedSteps = plan.steps.map((step) => ({
     ...step,
     action: step.action ? action.safeParse(step.action) : null,
+    adaptive: step.adaptive ? adaptive.safeParse(step.adaptive) : null,
   }));
-  if (validatedSteps.some((step) => !step.action?.success)) {
+  if (
+    validatedSteps.some(
+      (step) =>
+        !step.action?.success || (step.adaptive && !step.adaptive.success),
+    )
+  ) {
     return res.status(400).json({
       success: false,
       error:
         "Every approved step must contain one validated allowlisted action",
+    });
+  }
+  const stepIds = new Set(plan.steps.map((step) => step.id));
+  if (
+    plan.steps.some(
+      (step) =>
+        step.adaptive?.retry?.alternateStepId &&
+        !stepIds.has(step.adaptive.retry.alternateStepId),
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Every alternate step reference must point to an approved step",
     });
   }
   const execution = executionStateRepository.create(plan);
@@ -103,4 +156,85 @@ assistantExecutionRouter.post("/:executionId/cancel", (req, res) => {
       .status(404)
       .json({ success: false, error: "Execution not found" });
   res.json({ success: true, execution });
+});
+
+assistantExecutionRouter.post("/:executionId/approve-alternate", (req, res) => {
+  if (req.body?.confirmation !== true) {
+    return res.status(400).json({
+      success: false,
+      error: "Explicit confirmation is required to select an alternate step",
+    });
+
+    assistantExecutionRouter.post("/:executionId/approve", (req, res) => {
+      if (req.body?.confirmation !== true) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Explicit confirmation is required to continue after uncertain analysis",
+        });
+      }
+      const execution = executionStateRepository.get(req.params.executionId);
+      if (!execution)
+        return res
+          .status(404)
+          .json({ success: false, error: "Execution not found" });
+      const plan = assistantStateRepository.getPlan(
+        execution.planId,
+        execution.sessionId,
+      );
+      if (!plan)
+        return res
+          .status(404)
+          .json({ success: false, error: "Assistant plan not found" });
+      void executionStateRepository
+        .approvePending(execution.id, plan)
+        .then((updated) => {
+          if (!updated) {
+            res.status(409).json({
+              success: false,
+              error: "No pending approval exists",
+            });
+            return;
+          }
+          res.json({ success: true, execution: updated });
+        })
+        .catch((error) =>
+          res.status(500).json({
+            success: false,
+            error: error instanceof Error ? error.message : "Approval failed",
+          }),
+        );
+    });
+  }
+  const execution = executionStateRepository.get(req.params.executionId);
+  if (!execution)
+    return res
+      .status(404)
+      .json({ success: false, error: "Execution not found" });
+  const plan = assistantStateRepository.getPlan(
+    execution.planId,
+    execution.sessionId,
+  );
+  if (!plan)
+    return res
+      .status(404)
+      .json({ success: false, error: "Assistant plan not found" });
+  void executionStateRepository
+    .approveAlternate(execution.id, plan)
+    .then((updated) => {
+      if (!updated) {
+        res.status(409).json({
+          success: false,
+          error: "No explicitly available alternate step exists",
+        });
+        return;
+      }
+      res.json({ success: true, execution: updated });
+    })
+    .catch((error) =>
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Alternate failed",
+      }),
+    );
 });
