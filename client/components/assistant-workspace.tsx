@@ -23,6 +23,7 @@ import {
   Target,
   Upload,
   Workflow,
+  Video,
   X,
   Zap,
 } from "lucide-react";
@@ -40,7 +41,8 @@ export type AssistantView =
   | "workspace"
   | "captures"
   | "operations"
-  | "accomplishments";
+  | "accomplishments"
+  | "recordings";
 
 export interface AssistantWorkspaceState {
   selectedProjectId: string;
@@ -70,6 +72,7 @@ const navigation = [
   { label: "Workspace", path: "/workspace", icon: LayoutDashboard },
   { label: "Captures", path: "/captures", icon: Camera },
   { label: "Operations", path: "/operations", icon: Workflow },
+  { label: "Recordings", path: "/recordings", icon: Video },
   { label: "Accomplishments", path: "/accomplishments", icon: Archive },
 ];
 
@@ -91,6 +94,7 @@ function getViewFromPath(pathname: string): AssistantView {
   if (pathname.startsWith("/captures")) return "captures";
   if (pathname.startsWith("/operations")) return "operations";
   if (pathname.startsWith("/accomplishments")) return "accomplishments";
+  if (pathname.startsWith("/recordings")) return "recordings";
   return "workspace";
 }
 

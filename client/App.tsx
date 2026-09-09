@@ -15,6 +15,7 @@ import Workspace from "./pages/Workspace";
 import Captures from "./pages/Captures";
 import Operations from "./pages/Operations";
 import Accomplishments from "./pages/Accomplishments";
+import Recordings from "./pages/Recordings";
 
 const queryClient = new QueryClient();
 
@@ -33,6 +34,7 @@ const App = () => (
           <Route path="/captures" element={<Captures />} />
           <Route path="/operations" element={<Operations />} />
           <Route path="/accomplishments" element={<Accomplishments />} />
+          <Route path="/recordings" element={<Recordings />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

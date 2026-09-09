@@ -24,6 +24,7 @@ import { assistantSourcesRouter } from "./routes/assistant-sources";
 import { analysisRouter } from "./routes/analysis";
 import { assistantPlansRouter } from "./routes/assistant-plans";
 import { assistantExecutionRouter } from "./routes/assistant-execution";
+import { assistantRecordingsRouter } from "./routes/assistant-recordings";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +40,8 @@ export function createServer() {
   app.use("/api/assistant/analysis", analysisRouter);
   app.use("/api/assistant/plans", assistantPlansRouter);
   app.use("/api/assistant/execution", assistantExecutionRouter);
+  app.use("/api/assistant/recordings", assistantRecordingsRouter);
+>>>>>>> 771c721 (Add safe action recording foundation)
 
   // Example API routes
   app.get("/api/ping", (_req, res) => {
