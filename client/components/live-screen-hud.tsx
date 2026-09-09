@@ -40,6 +40,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import {
+  framePointAsPercent,
+  framePointFromClient,
+  getContainedFrameViewport,
+} from "@/lib/frame-viewport";
 
 export interface SequenceStep {
   id: string;
@@ -154,6 +159,8 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   onLiveStreamChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const streamSyncIntervalRef = useRef<number | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -273,6 +280,10 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   // Start / Stop Browser-Native Real Screen Sharing (getDisplayMedia)
   const handleToggleRealScreenStream = async () => {
     if (isLiveStreamActive) {
+      if (streamSyncIntervalRef.current !== null) {
+        window.clearInterval(streamSyncIntervalRef.current);
+        streamSyncIntervalRef.current = null;
+      }
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach((t) => t.stop());
@@ -324,7 +335,7 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
 
         // Continuous sync to backend
         const canvas = document.createElement("canvas");
-        const interval = setInterval(() => {
+        streamSyncIntervalRef.current = window.setInterval(() => {
           if (stream.active && videoRef.current) {
             canvas.width = videoRef.current.videoWidth || 1920;
             canvas.height = videoRef.current.videoHeight || 1080;
@@ -337,12 +348,19 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
               body: JSON.stringify({ imageData: dataUrl }),
             }).catch(() => {});
           } else {
-            clearInterval(interval);
+            if (streamSyncIntervalRef.current !== null) {
+              window.clearInterval(streamSyncIntervalRef.current);
+              streamSyncIntervalRef.current = null;
+            }
           }
         }, 300);
       }
 
       stream.getVideoTracks()[0].onended = () => {
+        if (streamSyncIntervalRef.current !== null) {
+          window.clearInterval(streamSyncIntervalRef.current);
+          streamSyncIntervalRef.current = null;
+        }
         setIsLiveStreamActive(false);
         setFrozenSnapshotUrl(null);
         notifyLiveChange(false, null, null);
@@ -351,6 +369,17 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
       console.log("User cancelled screen share or error:", err);
     }
   };
+
+  React.useEffect(
+    () => () => {
+      if (streamSyncIntervalRef.current !== null) {
+        window.clearInterval(streamSyncIntervalRef.current);
+      }
+      const stream = videoRef.current?.srcObject as MediaStream | null;
+      stream?.getTracks().forEach((track) => track.stop());
+    },
+    [],
+  );
 
   const [overlayActiveTool, setOverlayActiveTool] = useState<
     "route" | "click" | "task" | "goal" | "avoidance"
@@ -400,22 +429,21 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   const NATIVE_HEIGHT = 1080;
 
   const getNativeCoordinates = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!containerRef.current) return { x: 0, y: 0, pctX: 50, pctY: 50 };
-    const rect = containerRef.current.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
-
-    const nativeX = Math.round((clickX / rect.width) * NATIVE_WIDTH);
-    const nativeY = Math.round((clickY / rect.height) * NATIVE_HEIGHT);
-
-    const pctX = (clickX / rect.width) * 100;
-    const pctY = (clickY / rect.height) * 100;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0, pctX: 50, pctY: 50 };
+    const viewport = getContainedFrameViewport(rect, {
+      width: NATIVE_WIDTH,
+      height: NATIVE_HEIGHT,
+    });
+    const point = framePointFromClient(e.clientX, e.clientY, viewport, {
+      width: NATIVE_WIDTH,
+      height: NATIVE_HEIGHT,
+    });
 
     return {
-      x: Math.max(0, Math.min(NATIVE_WIDTH, nativeX)),
-      y: Math.max(0, Math.min(NATIVE_HEIGHT, nativeY)),
-      pctX,
-      pctY,
+      ...point,
+      pctX: (point.x / NATIVE_WIDTH) * 100,
+      pctY: (point.y / NATIVE_HEIGHT) * 100,
     };
   };
 
@@ -702,78 +730,81 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
       onClick={handleContainerClick}
       onContextMenu={handleContainerContextMenu}
     >
-      {/* Native WebRTC Live Real Screen Video Stream */}
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        className={`w-full h-full object-contain pointer-events-none absolute inset-0 z-0 ${
-          isLiveStreamActive && antiTunnelMode === "live_stream"
-            ? "block"
-            : "hidden"
-        }`}
-      />
-
-      {/* Anti-Tunnel Freeze Frame Snapshot (Prevents Infinite Visual Loop) */}
-      {isLiveStreamActive && antiTunnelMode === "anti_tunnel_snapshot" && (
-        <div className="absolute inset-0 z-0 flex flex-col items-center justify-center bg-black">
-          {frozenSnapshotUrl ? (
-            <img
-              src={frozenSnapshotUrl}
-              alt="Anti-Tunnel Snapshot"
-              className="w-full h-full object-contain pointer-events-none"
-            />
-          ) : (
-            <div className="text-center p-4">
-              <span className="text-xs font-mono text-cyan-300 animate-pulse">
-                🛡️ Anti-Tunnel Snapshot Active (Zero Visual Feedback Loop)
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {!isLiveStreamActive &&
-      screenshotUrl &&
-      !screenshotUrl.includes("sample_placeholder") ? (
-        <img
-          src={screenshotUrl}
-          alt="Live Screen Capture"
-          className="w-full h-full object-contain pointer-events-none absolute inset-0 z-0"
+      <div ref={viewportRef} className="absolute inset-0">
+        {/* Native WebRTC Live Real Screen Video Stream */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className={`w-full h-full object-contain pointer-events-none absolute inset-0 z-0 ${
+            isLiveStreamActive && antiTunnelMode === "live_stream"
+              ? "block"
+              : "hidden"
+          }`}
         />
-      ) : (
-        !isLiveStreamActive && (
-          <div
-            onClick={handleToggleRealScreenStream}
-            className="w-full h-full flex flex-col items-center justify-center text-slate-300 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6 text-center cursor-pointer hover:bg-slate-900/90 transition-all group z-10 select-none"
-          >
-            <div className="w-20 h-20 rounded-full bg-cyan-950/80 border-2 border-cyan-400/80 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:border-cyan-300 transition-all shadow-[0_0_30px_rgba(6,182,212,0.4)] animate-pulse">
-              <Monitor className="w-10 h-10 text-cyan-300" />
-            </div>
 
-            <h3 className="text-lg font-bold font-mono text-slate-100 mb-1 group-hover:text-cyan-300 transition-colors">
-              CLICK ANYWHERE TO START LIVE SCREEN STREAM 📺
-            </h3>
-            <p className="text-xs font-mono text-slate-300 max-w-md mb-4">
-              Direct 60 FPS zero-latency hardware desktop mirror for AI mouse
-              navigation, OCR text scanning, and physical PyAutoGUI automation.
-            </p>
-
-            <Button
-              size="lg"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleToggleRealScreenStream();
-              }}
-              className="h-10 px-6 text-sm font-mono font-bold bg-gradient-to-r from-cyan-600 via-blue-600 to-cyan-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-xl shadow-cyan-950 border border-cyan-400/40 gap-2 animate-bounce"
-            >
-              <Play className="w-4 h-4 text-yellow-300 fill-yellow-300" />
-              START REAL DESKTOP STREAM (60 FPS)
-            </Button>
+        {/* Anti-Tunnel Freeze Frame Snapshot (Prevents Infinite Visual Loop) */}
+        {isLiveStreamActive && antiTunnelMode === "anti_tunnel_snapshot" && (
+          <div className="absolute inset-0 z-0 flex flex-col items-center justify-center bg-black">
+            {frozenSnapshotUrl ? (
+              <img
+                src={frozenSnapshotUrl}
+                alt="Anti-Tunnel Snapshot"
+                className="w-full h-full object-contain pointer-events-none"
+              />
+            ) : (
+              <div className="text-center p-4">
+                <span className="text-xs font-mono text-cyan-300 animate-pulse">
+                  🛡️ Anti-Tunnel Snapshot Active (Zero Visual Feedback Loop)
+                </span>
+              </div>
+            )}
           </div>
-        )
-      )}
+        )}
+
+        {!isLiveStreamActive &&
+        screenshotUrl &&
+        !screenshotUrl.includes("sample_placeholder") ? (
+          <img
+            src={screenshotUrl}
+            alt="Live Screen Capture"
+            className="w-full h-full object-contain pointer-events-none absolute inset-0 z-0"
+          />
+        ) : (
+          !isLiveStreamActive && (
+            <div
+              onClick={handleToggleRealScreenStream}
+              className="w-full h-full flex flex-col items-center justify-center text-slate-300 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6 text-center cursor-pointer hover:bg-slate-900/90 transition-all group z-10 select-none"
+            >
+              <div className="w-20 h-20 rounded-full bg-cyan-950/80 border-2 border-cyan-400/80 flex items-center justify-center mb-4 group-hover:scale-110 group-hover:border-cyan-300 transition-all shadow-[0_0_30px_rgba(6,182,212,0.4)] animate-pulse">
+                <Monitor className="w-10 h-10 text-cyan-300" />
+              </div>
+
+              <h3 className="text-lg font-bold font-mono text-slate-100 mb-1 group-hover:text-cyan-300 transition-colors">
+                CLICK ANYWHERE TO START LIVE SCREEN STREAM 📺
+              </h3>
+              <p className="text-xs font-mono text-slate-300 max-w-md mb-4">
+                Direct 60 FPS zero-latency hardware desktop mirror for AI mouse
+                navigation, OCR text scanning, and physical PyAutoGUI
+                automation.
+              </p>
+
+              <Button
+                size="lg"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggleRealScreenStream();
+                }}
+                className="h-10 px-6 text-sm font-mono font-bold bg-gradient-to-r from-cyan-600 via-blue-600 to-cyan-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-xl shadow-cyan-950 border border-cyan-400/40 gap-2 animate-bounce"
+              >
+                <Play className="w-4 h-4 text-yellow-300 fill-yellow-300" />
+                START REAL DESKTOP STREAM (60 FPS)
+              </Button>
+            </div>
+          )
+        )}
+      </div>
 
       {/* Prominent High-Visibility Action Toolbar */}
       <div className="p-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 font-mono text-xs z-30 relative shadow-md">
@@ -863,8 +894,18 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
           {splineMotionTrail.map((pt, idx) => (
             <circle
               key={idx}
-              cx={`${(pt.x / 1920) * 100}%`}
-              cy={`${(pt.y / 1080) * 100}%`}
+              cx={
+                framePointAsPercent(pt.x, pt.y, {
+                  width: NATIVE_WIDTH,
+                  height: NATIVE_HEIGHT,
+                }).left
+              }
+              cy={
+                framePointAsPercent(pt.x, pt.y, {
+                  width: NATIVE_WIDTH,
+                  height: NATIVE_HEIGHT,
+                }).top
+              }
               r={2 + (idx / splineMotionTrail.length) * 3}
               fill="#06b6d4"
               opacity={(idx / splineMotionTrail.length) * 0.8}
@@ -877,8 +918,11 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
       {(replayingCursorPos || mousePos) && (
         <div
           style={{
-            left: `${((replayingCursorPos?.x || mousePos?.x || 0) / 1920) * 100}%`,
-            top: `${((replayingCursorPos?.y || mousePos?.y || 0) / 1080) * 100}%`,
+            ...framePointAsPercent(
+              replayingCursorPos?.x || mousePos?.x || 0,
+              replayingCursorPos?.y || mousePos?.y || 0,
+              { width: NATIVE_WIDTH, height: NATIVE_HEIGHT },
+            ),
           }}
           className="absolute -translate-x-1 -translate-y-1 pointer-events-none z-40 flex flex-col items-start transition-transform duration-75"
         >

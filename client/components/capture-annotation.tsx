@@ -87,7 +87,7 @@ export function CaptureGallery({
             <img
               src={frame.imageUrl}
               alt=""
-              className="aspect-video w-20 rounded border border-slate-700 object-cover"
+              className="aspect-video w-20 rounded border border-slate-700 object-contain bg-slate-950"
             />
             <span className="absolute -left-3 flex h-5 w-5 items-center justify-center rounded-full border border-slate-700 bg-slate-950 text-[10px] text-slate-300">
               {index + 1}
@@ -140,7 +140,7 @@ export function AnnotationCanvas({
       <img
         src={frame.imageUrl}
         alt={`Captured screen: ${frame.title}`}
-        className="block aspect-video w-full object-cover"
+        className="block aspect-video w-full object-contain bg-slate-950"
       />
       <div
         className="absolute inset-0"

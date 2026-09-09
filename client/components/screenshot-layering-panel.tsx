@@ -39,6 +39,11 @@ import { Slider } from "@/components/ui/slider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { TabContextualSettingsBar } from "./tab-contextual-settings-bar";
+import {
+  framePointAsPercent,
+  framePointFromClient,
+  getContainedFrameViewport,
+} from "@/lib/frame-viewport";
 
 export interface WorkflowSlide {
   id: string;
@@ -262,8 +267,14 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
   // User clicks on canvas image to reposition action target
   const handleCanvasImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
-    const clickY = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
+    const point = framePointFromClient(
+      e.clientX,
+      e.clientY,
+      getContainedFrameViewport(rect, { width: 1920, height: 1080 }),
+      { width: 1920, height: 1080 },
+    );
+    const clickX = point.x;
+    const clickY = point.y;
 
     setSlides((prev) =>
       prev.map((s) =>
@@ -586,10 +597,14 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
 
                 {/* Target Pin on Canvas */}
                 <div
-                  style={{
-                    left: `${(activeSlide.targetX / 1920) * 100}%`,
-                    top: `${(activeSlide.targetY / 1080) * 100}%`,
-                  }}
+                  style={framePointAsPercent(
+                    activeSlide.targetX,
+                    activeSlide.targetY,
+                    {
+                      width: 1920,
+                      height: 1080,
+                    },
+                  )}
                   className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none animate-bounce"
                 >
                   <div className="p-1.5 rounded-full bg-cyan-500 border-2 border-white shadow-xl shadow-cyan-500/80">
