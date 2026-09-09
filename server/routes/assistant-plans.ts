@@ -8,12 +8,14 @@ import type {
   PlanRisk,
   PlannedStep,
   TimingHint,
+  WaitCondition,
 } from "@shared/assistant";
 import { assistantStateRepository } from "../assistant-state";
 import {
   adaptiveExecutionPolicySchema,
   allowlistedActionSchema,
 } from "./assistant-execution";
+import { conditionSchema } from "./assistant-conditions";
 
 const timingHint = z.enum(["now", "soon", "scheduled", "when_ready"]);
 const planStep = z.object({
@@ -28,6 +30,7 @@ const planStep = z.object({
   risks: z.array(z.string()),
   action: allowlistedActionSchema.optional(),
   adaptive: adaptiveExecutionPolicySchema.optional(),
+  waitConditions: z.array(conditionSchema).max(20).optional(),
 });
 
 const createPlanBody = z.object({
@@ -216,7 +219,8 @@ assistantPlansRouter.put("/:planId", (req, res) => {
       ? (adaptiveExecutionPolicySchema.parse(
           step.adaptive,
         ) as PlannedStep["adaptive"])
-      : undefined,
+        : undefined,
+    waitConditions: step.waitConditions as WaitCondition[] | undefined,
   }));
   const updated = assistantStateRepository.updatePlan(
     req.params.planId,
@@ -245,6 +249,26 @@ function updateApproval(
     return res
       .status(404)
       .json({ success: false, error: "Assistant plan not found" });
+  if (state === "approved") {
+    const conditions = plan.steps.flatMap((step) => step.waitConditions ?? []);
+    const unapproved = conditions.find((condition) => !condition.approved);
+    const lowConfidenceControl = conditions.find(
+      (condition) =>
+        (condition.type === "close_control" ||
+          condition.type === "next_control") &&
+        condition.confidenceThreshold < 0.8,
+    );
+    if (unapproved || lowConfidenceControl) {
+      return res.status(409).json({
+        success: false,
+        error: unapproved
+          ? "Every wait condition must be explicitly approved"
+          : "Close/next controls require at least 80% confidence",
+        suggestion:
+          "Review the condition in the plan editor; no detected UI is clicked automatically.",
+      });
+    }
+  }
   const timestamp = new Date().toISOString();
   const updated = assistantStateRepository.updatePlan(
     req.params.planId,

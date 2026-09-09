@@ -22,6 +22,81 @@ export type PlanStepStatus = "proposed" | "edited" | "approved";
 export type PlanRiskLevel = "low" | "medium" | "high";
 export type TimingHint = "now" | "soon" | "scheduled" | "when_ready";
 
+export type WaitConditionType =
+  | "visible_text"
+  | "region"
+  | "close_control"
+  | "next_control"
+  | "timer"
+  | "page_load_stable";
+export type WaitConditionStatus = "pending" | "met" | "blocked" | "timed_out";
+
+export interface WaitConditionBase {
+  id: string;
+  type: WaitConditionType;
+  label: string;
+  timeoutMs: number;
+  pollIntervalMs: number;
+  confidenceThreshold: number;
+  approved: boolean;
+}
+
+export interface VisibleTextWaitCondition extends WaitConditionBase {
+  type: "visible_text";
+  text: string;
+  caseSensitive?: boolean;
+}
+
+export interface RegionWaitCondition extends WaitConditionBase {
+  type: "region";
+  region: RegionOfInterest;
+}
+
+export interface ControlWaitCondition extends WaitConditionBase {
+  type: "close_control" | "next_control";
+  controlLabel?: string;
+}
+
+export interface TimerWaitCondition extends WaitConditionBase {
+  type: "timer";
+  durationMs: number;
+}
+
+export interface PageLoadStableWaitCondition extends WaitConditionBase {
+  type: "page_load_stable";
+  stableForMs: number;
+}
+
+export type WaitCondition =
+  | VisibleTextWaitCondition
+  | RegionWaitCondition
+  | ControlWaitCondition
+  | TimerWaitCondition
+  | PageLoadStableWaitCondition;
+
+export interface WaitConditionObservation {
+  visibleText?: string;
+  regions?: RegionOfInterest[];
+  controls?: Array<{
+    type: "close" | "next";
+    label?: string;
+    confidence: number;
+  }>;
+  pageLoadStable?: boolean;
+  timerElapsedMs?: number;
+}
+
+export interface WaitConditionStatusEvent {
+  id: string;
+  conditionId: string;
+  sessionId: string;
+  status: WaitConditionStatus;
+  message: string;
+  suggestion?: string;
+  confidence?: number;
+  timestamp: string;
+}
+
 export type AllowlistedActionType =
   | "click"
   | "type"
@@ -322,6 +397,7 @@ export interface PlannedStep {
   risks: string[];
   action?: AllowlistedAction;
   adaptive?: AdaptiveExecutionPolicy;
+  waitConditions?: WaitCondition[];
 }
 
 export interface PlanRisk {

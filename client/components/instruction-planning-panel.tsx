@@ -1,11 +1,17 @@
 import { useState } from "react";
-import type { AssistantPlan, PlannedStep, TimingHint } from "@shared/assistant";
+import type {
+  AssistantPlan,
+  PlannedStep,
+  TimingHint,
+  WaitCondition,
+} from "@shared/assistant";
 import { Check, Pencil, ShieldAlert, Sparkles, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { ExecutionControlPanel } from "@/components/execution-control-panel";
+import { WaitConditionPanel } from "@/components/wait-condition-panel";
 
 const timingOptions: TimingHint[] = ["now", "soon", "scheduled", "when_ready"];
 
@@ -159,6 +165,17 @@ export function PlanReview({
                 />
               </label>
             </div>
+            {step.waitConditions && step.waitConditions.length > 0 && (
+              <div className="mt-2 rounded-md border border-cyan-300/20 bg-cyan-300/5 p-2 text-[11px] text-cyan-200">
+                Reviewable gates:{" "}
+                {step.waitConditions
+                  .map(
+                    (condition) =>
+                      `${condition.label} (${condition.approved ? "approved" : "needs approval"})`,
+                  )
+                  .join(", ")}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -297,6 +314,26 @@ export function InstructionPlanningPanel() {
           {plan.approvalState === "approved" && (
             <ExecutionControlPanel plan={plan} />
           )}
+          <WaitConditionPanel
+            sessionId={plan.sessionId}
+            onConditionCreated={(condition: WaitCondition) =>
+              setPlan({
+                ...plan,
+                steps: plan.steps.map((step, index) =>
+                  index === 0
+                    ? {
+                        ...step,
+                        waitConditions: [
+                          ...(step.waitConditions ?? []),
+                          condition,
+                        ],
+                        status: "edited",
+                      }
+                    : step,
+                ),
+              })
+            }
+          />
         </>
       )}
     </div>

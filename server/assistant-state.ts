@@ -8,6 +8,8 @@ import {
   SavedState,
   ScreenshotCapture,
   UserInstruction,
+  WaitCondition,
+  WaitConditionStatusEvent,
 } from "@shared/assistant";
 import { DurableStore, type StorageOptions } from "./durable-store";
 
@@ -19,6 +21,8 @@ type ResourceMap = {
   savedStates: SavedState;
   plans: AssistantPlan;
   workflows: AssistantWorkflow;
+  waitConditions: WaitCondition;
+  conditionEvents: WaitConditionStatusEvent;
 };
 
 const now = () => new Date().toISOString();
@@ -38,6 +42,8 @@ export class AssistantStateRepository {
     savedStates: new Map(),
     plans: new Map(),
     workflows: new Map(),
+    waitConditions: new Map(),
+    conditionEvents: new Map(),
   };
 
   constructor(options: StorageOptions = {}) {
@@ -117,7 +123,12 @@ export class AssistantStateRepository {
     if (!this.sessions.delete(id)) return false;
     for (const resourceMap of Object.values(this.resources)) {
       for (const [resourceId, resource] of resourceMap) {
-        if (resource.sessionId === id) resourceMap.delete(resourceId);
+        if (
+          "sessionId" in resource &&
+          (resource as { sessionId?: string }).sessionId === id
+        ) {
+          resourceMap.delete(resourceId);
+        }
       }
       this.persist();
     }
@@ -130,7 +141,9 @@ export class AssistantStateRepository {
   ): ResourceMap[K][] {
     this.load();
     return [...this.resources[kind].values()].filter(
-      (resource) => resource.sessionId === sessionId,
+      (resource) =>
+        "sessionId" in resource &&
+        (resource as { sessionId?: string }).sessionId === sessionId,
     );
   }
 
@@ -141,7 +154,11 @@ export class AssistantStateRepository {
   ): ResourceMap[K] | undefined {
     this.load();
     const resource = this.resources[kind].get(id);
-    return resource?.sessionId === sessionId ? resource : undefined;
+    return resource &&
+      "sessionId" in resource &&
+      (resource as { sessionId?: string }).sessionId === sessionId
+      ? resource
+      : undefined;
   }
 
   createResource<K extends keyof ResourceMap>(
@@ -286,6 +303,34 @@ export class AssistantStateRepository {
     updates: Partial<AssistantWorkflow>,
   ): AssistantWorkflow | undefined {
     return this.updateResource("workflows", id, sessionId, updates);
+  }
+
+  listWaitConditions(sessionId: string): WaitCondition[] {
+    return this.listResource("waitConditions", sessionId);
+  }
+
+  getWaitCondition(id: string, sessionId: string): WaitCondition | undefined {
+    return this.getResource("waitConditions", id, sessionId);
+  }
+
+  createWaitCondition(
+    sessionId: string,
+    condition: WaitCondition,
+  ): WaitCondition {
+    return this.createResource("waitConditions", sessionId, condition);
+  }
+
+  listConditionEvents(sessionId: string): WaitConditionStatusEvent[] {
+    return this.listResource("conditionEvents", sessionId).sort((a, b) =>
+      b.timestamp.localeCompare(a.timestamp),
+    );
+  }
+
+  addConditionEvent(
+    sessionId: string,
+    event: Omit<WaitConditionStatusEvent, "id" | "sessionId" | "timestamp">,
+  ): WaitConditionStatusEvent {
+    return this.createResource("conditionEvents", sessionId, event);
   }
 }
 

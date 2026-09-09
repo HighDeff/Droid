@@ -27,6 +27,7 @@ import { assistantExecutionRouter } from "./routes/assistant-execution";
 import { assistantRecordingsRouter } from "./routes/assistant-recordings";
 import { assistantWorkflowsRouter } from "./routes/assistant-workflows";
 import { validateDeviceId } from "./automation-adapters";
+import { assistantConditionsRouter } from "./routes/assistant-conditions";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,6 +45,7 @@ export function createServer() {
   app.use("/api/assistant/execution", assistantExecutionRouter);
   app.use("/api/assistant/recordings", assistantRecordingsRouter);
   app.use("/api/assistant/workflows", assistantWorkflowsRouter);
+  app.use("/api/assistant/conditions", assistantConditionsRouter);
 
   // Example API routes
   app.get("/api/ping", (_req, res) => {
