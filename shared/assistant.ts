@@ -22,6 +22,94 @@ export type PlanStepStatus = "proposed" | "edited" | "approved";
 export type PlanRiskLevel = "low" | "medium" | "high";
 export type TimingHint = "now" | "soon" | "scheduled" | "when_ready";
 
+export type AllowlistedActionType =
+  | "click"
+  | "type"
+  | "key"
+  | "wait"
+  | "screenshot"
+  | "navigate-shortcut";
+
+export interface ClickAction {
+  type: "click";
+  x: number;
+  y: number;
+  button?: "left" | "right";
+}
+
+export interface TypeAction {
+  type: "type";
+  text: string;
+}
+
+export interface KeyAction {
+  type: "key";
+  key: string;
+}
+
+export interface WaitAction {
+  type: "wait";
+  durationMs: number;
+}
+
+export interface ScreenshotAction {
+  type: "screenshot";
+  label?: string;
+}
+
+export interface NavigateShortcutAction {
+  type: "navigate-shortcut";
+  shortcut: "back" | "forward" | "home" | "refresh";
+}
+
+export type AllowlistedAction =
+  | ClickAction
+  | TypeAction
+  | KeyAction
+  | WaitAction
+  | ScreenshotAction
+  | NavigateShortcutAction;
+
+export type ExecutionStatus =
+  | "pending"
+  | "running"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export type ExecutionEventStatus = "started" | "completed" | "failed" | "info";
+
+export interface ExecutionTimelineEvent {
+  id: string;
+  timestamp: string;
+  status: ExecutionEventStatus;
+  message: string;
+  stepId?: string;
+  result?: unknown;
+}
+
+export interface ActionExecutionResult {
+  actionType: AllowlistedActionType;
+  success: boolean;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+export interface AssistantExecution {
+  id: string;
+  planId: string;
+  sessionId: string;
+  status: ExecutionStatus;
+  currentStep: number;
+  totalSteps: number;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+  timeline: ExecutionTimelineEvent[];
+  results: ActionExecutionResult[];
+}
+
 export interface AssistantProject {
   id: string;
   name: string;
@@ -169,6 +257,7 @@ export interface PlannedStep {
   confidence: number;
   prerequisites: string[];
   risks: string[];
+  action?: AllowlistedAction;
 }
 
 export interface PlanRisk {

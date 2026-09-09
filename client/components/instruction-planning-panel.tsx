@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { ExecutionControlPanel } from "@/components/execution-control-panel";
 
 const timingOptions: TimingHint[] = ["now", "soon", "scheduled", "when_ready"];
 
@@ -285,13 +286,18 @@ export function InstructionPlanningPanel() {
       />
       {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}
       {plan && (
-        <PlanReview
-          plan={plan}
-          onChange={setPlan}
-          onApprove={() => void savePlan(plan, "approve")}
-          onReject={() => void savePlan(plan, "reject")}
-          busy={busy}
-        />
+        <>
+          <PlanReview
+            plan={plan}
+            onChange={setPlan}
+            onApprove={() => void savePlan(plan, "approve")}
+            onReject={() => void savePlan(plan, "reject")}
+            busy={busy}
+          />
+          {plan.approvalState === "approved" && (
+            <ExecutionControlPanel plan={plan} />
+          )}
+        </>
       )}
     </div>
   );

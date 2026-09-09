@@ -9,6 +9,7 @@ import type {
   TimingHint,
 } from "@shared/assistant";
 import { assistantStateRepository } from "../assistant-state";
+import { allowlistedActionSchema } from "./assistant-execution";
 
 const timingHint = z.enum(["now", "soon", "scheduled", "when_ready"]);
 const planStep = z.object({
@@ -21,6 +22,7 @@ const planStep = z.object({
   confidence: z.number().min(0).max(1),
   prerequisites: z.array(z.string()),
   risks: z.array(z.string()),
+  action: allowlistedActionSchema.optional(),
 });
 
 const createPlanBody = z.object({
