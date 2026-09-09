@@ -5,6 +5,7 @@ Screen capture service using multiple backup methods
 import json
 import base64
 import sys
+from io import BytesIO
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -40,10 +41,25 @@ def main():
                     raise Exception("All capture methods failed")
         
         if image_data:
+            raw = image_data.split(",", 1)[-1]
+            from PIL import Image
+            with Image.open(BytesIO(base64.b64decode(raw))) as image:
+                width, height = image.size
             result = {
                 "success": True,
                 "imageData": image_data,
                 "method": method,
+                "metadata": {
+                    "pixels": {"width": width, "height": height},
+                    "viewport": {
+                        "pixels": {"width": width, "height": height},
+                        "css": {"width": width, "height": height},
+                        "devicePixelRatio": 1,
+                        "offset": {"x": 0, "y": 0},
+                    },
+                    "scale": {"x": 1, "y": 1},
+                    "offset": {"x": 0, "y": 0},
+                },
             }
             print(json.dumps(result))
         else:

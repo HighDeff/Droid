@@ -1,21 +1,27 @@
 import { Request, Response } from "express";
 import { spawn } from "child_process";
 import path from "path";
+import type { FrameMetadata } from "@shared/coordinates";
 
 // In-memory cache of the latest real desktop screen frame synced from the user's browser or upload
-export let latestSyncedRealFrame: string | null = null;
+let latestSyncedRealFrame: {
+  imageData: string;
+  metadata?: FrameMetadata;
+} | null = null;
 
 export const captureDesktopFrame = async (): Promise<{
   success: boolean;
   imageData?: string;
   method?: string;
+  metadata?: FrameMetadata;
   error?: string;
 }> => {
   if (latestSyncedRealFrame) {
     return {
       success: true,
-      imageData: latestSyncedRealFrame,
+      imageData: latestSyncedRealFrame.imageData,
       method: "real_desktop_stream",
+      metadata: latestSyncedRealFrame.metadata,
     };
   }
 
@@ -88,13 +94,34 @@ export const handleSyncRealFrame = async (
   res: Response,
 ): Promise<void> => {
   try {
-    const { imageData } = req.body;
+    const { imageData, metadata } = req.body;
     if (
       imageData &&
       typeof imageData === "string" &&
       imageData.startsWith("data:image/")
     ) {
-      latestSyncedRealFrame = imageData;
+      if (metadata !== undefined) {
+        if (
+          !metadata ||
+          !metadata.pixels ||
+          !metadata.viewport ||
+          !Number.isInteger(metadata.pixels.width) ||
+          !Number.isInteger(metadata.pixels.height) ||
+          metadata.pixels.width <= 0 ||
+          metadata.pixels.height <= 0 ||
+          !Number.isFinite(metadata.scale?.x) ||
+          !Number.isFinite(metadata.scale?.y) ||
+          !Number.isFinite(metadata.offset?.x) ||
+          !Number.isFinite(metadata.offset?.y)
+        ) {
+          res.status(400).json({
+            success: false,
+            error: "Invalid frame scale or viewport metadata.",
+          });
+          return;
+        }
+      }
+      latestSyncedRealFrame = { imageData, metadata };
       res.json({
         success: true,
         message: "Real desktop frame synced successfully.",

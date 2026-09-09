@@ -26,6 +26,7 @@ import { assistantPlansRouter } from "./routes/assistant-plans";
 import { assistantExecutionRouter } from "./routes/assistant-execution";
 import { assistantRecordingsRouter } from "./routes/assistant-recordings";
 import { assistantWorkflowsRouter } from "./routes/assistant-workflows";
+import { validateDeviceId } from "./automation-adapters";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -224,7 +225,16 @@ except Exception as e:
     try {
       const deviceId = req.query.deviceId as string | undefined;
       const args: string[] = [];
-      if (deviceId) args.push("-s", deviceId);
+      if (deviceId) {
+        try {
+          args.push("-s", validateDeviceId(deviceId));
+        } catch (error) {
+          return res.status(400).json({
+            success: false,
+            error: error instanceof Error ? error.message : "Invalid device ID",
+          });
+        }
+      }
       args.push("exec-out", "screencap", "-p");
       const py = spawn("adb", args, { stdio: ["pipe", "pipe", "pipe"] });
       let out: Buffer[] = [];
