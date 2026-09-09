@@ -81,6 +81,52 @@ export interface ScreenshotCapture {
   annotations: Annotation[];
 }
 
+export type AnalysisStatus =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "fallback"
+  | "failed";
+
+export type AnalysisProvider = "local-ocr" | "deterministic-fallback";
+
+export interface CapturedFrameReference {
+  captureId?: string;
+  sessionId?: string;
+  imageRef?: string;
+  imageData?: string;
+}
+
+export interface OCRTextBlock {
+  id: string;
+  text: string;
+  confidence: number;
+  region?: RegionOfInterest;
+}
+
+export interface DetectedUIElement {
+  id: string;
+  type: string;
+  label?: string;
+  confidence: number;
+  region: RegionOfInterest;
+}
+
+export interface FrameAnalysis {
+  id: string;
+  captureId?: string;
+  sessionId?: string;
+  source?: string;
+  status: AnalysisStatus;
+  provider: AnalysisProvider;
+  confidence: number;
+  ocrText: OCRTextBlock[];
+  detectedElements: DetectedUIElement[];
+  regionsOfInterest: RegionOfInterest[];
+  notes: string[];
+  analyzedAt: string;
+}
+
 export interface UserInstruction {
   id: string;
   sessionId: string;

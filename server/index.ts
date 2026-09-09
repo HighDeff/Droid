@@ -21,6 +21,7 @@ import { centralLogHub } from "./log-hub";
 import { spawn } from "child_process";
 import { assistantRouter } from "./routes/assistant";
 import { assistantSourcesRouter } from "./routes/assistant-sources";
+import { analysisRouter } from "./routes/analysis";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,6 +34,7 @@ export function createServer() {
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
   app.use("/api/assistant", assistantRouter);
   app.use("/api/assistant/sources", assistantSourcesRouter);
+  app.use("/api/assistant/analysis", analysisRouter);
 
   // Example API routes
   app.get("/api/ping", (_req, res) => {
