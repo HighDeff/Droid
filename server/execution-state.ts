@@ -47,12 +47,18 @@ export class ExecutionStateRepository {
 
   constructor(
     private readonly executeAction: SafeActionExecutor = defaultExecutor,
-    options: StorageOptions = {},
-    private readonly observe: ObservationProvider = async () => ({}),
+    optionsOrObserve: StorageOptions | ObservationProvider = {},
+    observe: ObservationProvider = async () => ({}),
   ) {
+    const options =
+      typeof optionsOrObserve === "function" ? {} : optionsOrObserve;
+    this.observe =
+      typeof optionsOrObserve === "function" ? optionsOrObserve : observe;
     this.store = new DurableStore(options);
     this.load();
   }
+
+  private readonly observe: ObservationProvider;
 
   private load() {
     this.executions = new Map(
@@ -68,7 +74,6 @@ export class ExecutionStateRepository {
 
   get(id: string): AssistantExecution | undefined {
     this.load();
-  get(id: string): AssistantExecution | undefined {
     return this.executions.get(id);
   }
 
@@ -129,7 +134,10 @@ export class ExecutionStateRepository {
   async start(execution: AssistantExecution, plan: AssistantPlan) {
     this.load();
     const storedExecution = this.executions.get(execution.id);
-    if (storedExecution) execution = storedExecution;
+    if (storedExecution && storedExecution !== execution) {
+      Object.assign(execution, storedExecution);
+      this.executions.set(execution.id, execution);
+    }
     if (execution.status !== "pending" && execution.status !== "paused")
       return execution;
     const control = this.controls.get(execution.id);

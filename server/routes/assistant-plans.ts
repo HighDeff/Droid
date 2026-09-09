@@ -219,7 +219,7 @@ assistantPlansRouter.put("/:planId", (req, res) => {
       ? (adaptiveExecutionPolicySchema.parse(
           step.adaptive,
         ) as PlannedStep["adaptive"])
-        : undefined,
+      : undefined,
     waitConditions: step.waitConditions as WaitCondition[] | undefined,
   }));
   const updated = assistantStateRepository.updatePlan(
