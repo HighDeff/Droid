@@ -88,17 +88,17 @@ export function validateAdbEndpoint(ip: unknown, port: unknown): string {
   ) {
     throw new Error("A valid port is required");
   }
- return `${ip}:${numericPort}`;
+  return `${ip}:${numericPort}`;
 }
 
 export function redactSensitive(value: unknown): unknown {
- if (!value || typeof value !== "object") return value;
- if (Array.isArray(value)) return value.map(redactSensitive);
- return Object.fromEntries(
-   Object.entries(value).map(([key, child]) =>
-     /password|token|secret|api[-_]?key|authorization|code/i.test(key)
-       ? [key, "[REDACTED]"]
-       : [key, redactSensitive(child)],
-   ),
- );
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) =>
+      /password|token|secret|api[-_]?key|authorization|code/i.test(key)
+        ? [key, "[REDACTED]"]
+        : [key, redactSensitive(child)],
+    ),
+  );
 }
