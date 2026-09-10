@@ -1,6 +1,5 @@
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { handleDemo } from "./routes/demo";
@@ -28,6 +27,12 @@ import { assistantRecordingsRouter } from "./routes/assistant-recordings";
 import { assistantWorkflowsRouter } from "./routes/assistant-workflows";
 import { validateDeviceId } from "./automation-adapters";
 import { assistantConditionsRouter } from "./routes/assistant-conditions";
+import {
+  createApiRateLimiter,
+  createCorsMiddleware,
+  requireApiAccess,
+  validateAdbEndpoint,
+} from "./security";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,17 +40,34 @@ export function createServer() {
   const app = express();
 
   // Middleware
-  app.use(cors());
+  app.use(createCorsMiddleware());
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-  app.use("/api/assistant", assistantRouter);
-  app.use("/api/assistant/sources", assistantSourcesRouter);
-  app.use("/api/assistant/analysis", analysisRouter);
-  app.use("/api/assistant/plans", assistantPlansRouter);
-  app.use("/api/assistant/execution", assistantExecutionRouter);
-  app.use("/api/assistant/recordings", assistantRecordingsRouter);
-  app.use("/api/assistant/workflows", assistantWorkflowsRouter);
-  app.use("/api/assistant/conditions", assistantConditionsRouter);
+  app.use("/api/assistant", requireApiAccess, assistantRouter);
+  app.use("/api/assistant/sources", requireApiAccess, assistantSourcesRouter);
+  app.use("/api/assistant/analysis", requireApiAccess, analysisRouter);
+  app.use("/api/assistant/plans", requireApiAccess, assistantPlansRouter);
+  app.use(
+    "/api/assistant/execution",
+    requireApiAccess,
+    assistantExecutionRouter,
+  );
+  app.use(
+    "/api/assistant/recordings",
+    requireApiAccess,
+    assistantRecordingsRouter,
+  );
+  app.use(
+    "/api/assistant/workflows",
+    requireApiAccess,
+    assistantWorkflowsRouter,
+  );
+  app.use(
+    "/api/assistant/conditions",
+    requireApiAccess,
+    assistantConditionsRouter,
+  );
+  app.use("/api", createApiRateLimiter(), requireApiAccess);
 
   // Example API routes
   app.get("/api/ping", (_req, res) => {
@@ -273,9 +295,15 @@ except Exception as e:
   app.post("/api/adb/connect", async (req, res) => {
     try {
       const { ip, port = 5555 } = req.body;
-      if (!ip)
-        return res.status(400).json({ success: false, error: "Missing ip" });
-      const target = `${ip}:${port}`;
+      let target: string;
+      try {
+        target = validateAdbEndpoint(ip, port);
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          error: error instanceof Error ? error.message : "Invalid endpoint",
+        });
+      }
       const py = spawn("adb", ["connect", target], {
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -302,11 +330,20 @@ except Exception as e:
   app.post("/api/adb/pair", async (req, res) => {
     try {
       const { ip, port, code } = req.body;
-      if (!ip || !port || !code)
-        return res
-          .status(400)
-          .json({ success: false, error: "Missing ip/port/code" });
-      const target = `${ip}:${port}`;
+      if (!code || typeof code !== "string" || !/^\d{4,8}$/.test(code))
+        return res.status(400).json({
+          success: false,
+          error: "A 4-8 digit pairing code is required",
+        });
+      let target: string;
+      try {
+        target = validateAdbEndpoint(ip, port);
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          error: error instanceof Error ? error.message : "Invalid endpoint",
+        });
+      }
       const py = spawn("adb", ["pair", target, String(code)], {
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -336,7 +373,23 @@ except Exception as e:
     try {
       const { port = 5555, deviceId } = req.body;
       const args: string[] = [];
-      if (deviceId) args.push("-s", deviceId);
+      if (deviceId) {
+        try {
+          args.push("-s", validateDeviceId(deviceId));
+        } catch (error) {
+          return res.status(400).json({
+            success: false,
+            error: error instanceof Error ? error.message : "Invalid device ID",
+          });
+        }
+      }
+      if (
+        !Number.isInteger(Number(port)) ||
+        Number(port) < 1 ||
+        Number(port) > 65535
+      ) {
+        return res.status(400).json({ success: false, error: "Invalid port" });
+      }
       args.push("tcpip", String(port));
       const py = spawn("adb", args, { stdio: ["pipe", "pipe", "pipe"] });
       let out = "";
@@ -361,7 +414,18 @@ except Exception as e:
   app.post("/api/adb/disconnect", async (req, res) => {
     try {
       const { deviceId } = req.body;
-      const args = deviceId ? ["disconnect", deviceId] : ["disconnect"];
+      let safeDeviceId: string | undefined;
+      if (deviceId) {
+        try {
+          safeDeviceId = validateDeviceId(deviceId);
+        } catch (error) {
+          return res.status(400).json({
+            success: false,
+            error: error instanceof Error ? error.message : "Invalid device ID",
+          });
+        }
+      }
+      const args = safeDeviceId ? ["disconnect", safeDeviceId] : ["disconnect"];
       const py = spawn("adb", args, { stdio: ["pipe", "pipe", "pipe"] });
       let out = "";
       let er = "";

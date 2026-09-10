@@ -18,7 +18,7 @@ import { createServer } from "./server";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "0.0.0.0",
+    host: process.env.DEV_HOST || "127.0.0.1",
     port: 5173,
     fs: {
       allow: ["./client", "./shared", "."],

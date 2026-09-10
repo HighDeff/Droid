@@ -42,6 +42,13 @@ pnpm dev
 
 See [QUICKSTART.md](QUICKSTART.md) for detailed quick start guide.
 
+### Security
+
+The API controls the desktop and connected devices. It binds to loopback by
+default and requires `ASSISTANT_API_KEY` outside local development. Configure
+trusted browser origins with `CORS_ORIGINS`; do not expose the service directly
+to an untrusted network. See [SECURITY.md](SECURITY.md) for the deployment model.
+
 ### Assistant data storage
 
 Assistant sessions, captures, instructions, plans, executions, recordings,
