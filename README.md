@@ -169,6 +169,18 @@ user-supplied command. If all providers fail or no image data is supplied, the
 response is explicitly marked `fallback` with provider
 `deterministic-fallback`, zero OCR text, and provider error notes.
 
+#### Wait-condition observations
+
+`POST /api/assistant/conditions/:conditionId/evaluate` captures a fresh screen
+and runs OCR by default. The resulting OCR text and regions drive
+`visible_text`, `region`, `close_control`, and `next_control` conditions;
+`timer` conditions use the server-side elapsed time, and
+`page_load_stable` requires the same captured frame for `stableForMs`. A
+failed capture or OCR pass returns `503` so the plan remains paused. The
+legacy observation payload remains available only when callers explicitly set
+`useFreshObservation: false`. Control detection is observational only and
+never clicks a popup or navigation control.
+
 ### Step 5: Start Development Server
 
 ```bash

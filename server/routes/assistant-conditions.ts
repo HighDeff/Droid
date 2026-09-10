@@ -11,6 +11,10 @@ import {
   MAX_WAIT_TIMEOUT_MS,
   MIN_POLL_INTERVAL_MS,
 } from "../wait-conditions";
+import {
+  captureWaitObservation,
+  WaitObservationError,
+} from "../wait-observation";
 
 const base = {
   id: z.string().min(1),
@@ -117,7 +121,7 @@ assistantConditionsRouter.post("/", (req, res) => {
   res.status(201).json({ success: true, condition });
 });
 
-assistantConditionsRouter.post("/:conditionId/evaluate", (req, res) => {
+assistantConditionsRouter.post("/:conditionId/evaluate", async (req, res) => {
   const sessionId = String(req.query.sessionId ?? req.body?.sessionId ?? "");
   if (!sessionId || !requireSession(sessionId, res)) return;
   const condition = assistantStateRepository.getWaitCondition(
@@ -129,25 +133,48 @@ assistantConditionsRouter.post("/:conditionId/evaluate", (req, res) => {
       .status(404)
       .json({ success: false, error: "Wait condition not found" });
   }
-  const parsed = observationSchema.safeParse(req.body?.observation ?? {});
-  if (!parsed.success) {
-    return res.status(400).json({
-      success: false,
-      error: "Invalid wait condition observation",
-      issues: parsed.error.issues,
-    });
-  }
   const elapsedMs = Number(req.body?.elapsedMs ?? 0);
   if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
     return res
       .status(400)
       .json({ success: false, error: "elapsedMs must be non-negative" });
   }
-  const evaluation = evaluateWaitCondition(
-    condition,
-    parsed.data as WaitConditionObservation,
-    elapsedMs,
-  );
+  const startedAt = Date.now() - elapsedMs;
+  const useFreshObservation = req.body?.useFreshObservation !== false;
+  let observation: WaitConditionObservation;
+  let observationMeta: { ocrProvider: string; ocrErrors: string[] } | undefined;
+  if (useFreshObservation) {
+    try {
+      const captured = await captureWaitObservation(condition, startedAt);
+      observation = captured.observation;
+      observationMeta = {
+        ocrProvider: captured.ocrProvider,
+        ocrErrors: captured.ocrErrors,
+      };
+    } catch (error) {
+      const message =
+        error instanceof WaitObservationError
+          ? error.message
+          : "Fresh wait-condition observation failed";
+      return res.status(503).json({
+        success: false,
+        error: message,
+        suggestion:
+          "Keep the plan paused until a fresh screenshot and OCR observation are available.",
+      });
+    }
+  } else {
+    const parsed = observationSchema.safeParse(req.body?.observation ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid wait condition observation",
+        issues: parsed.error.issues,
+      });
+    }
+    observation = parsed.data as WaitConditionObservation;
+  }
+  const evaluation = evaluateWaitCondition(condition, observation, elapsedMs);
   const event = assistantStateRepository.addConditionEvent(sessionId, {
     conditionId: condition.id,
     status: evaluation.status,
@@ -155,5 +182,11 @@ assistantConditionsRouter.post("/:conditionId/evaluate", (req, res) => {
     suggestion: evaluation.suggestion,
     confidence: evaluation.confidence,
   });
-  res.json({ success: true, evaluation, event });
+  res.json({
+    success: true,
+    evaluation,
+    event,
+    observation,
+    ...(observationMeta ? { observationMeta } : {}),
+  });
 });
