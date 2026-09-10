@@ -21,6 +21,7 @@ Netlify provides integrated hosting with automatic builds and deployments.
    - Environment variables: Set as needed
 
 3. **Environment Variables**
+
    ```
    OLLAMA_ENDPOINT=https://remote.quantumpass.io/ollama/api/chat
    OLLAMA_MODEL=qwen2.5vl:7b
@@ -78,10 +79,7 @@ Create `api/` endpoints for serverless functions:
 // api/capture.ts
 import { VercelRequest, VercelResponse } from "@vercel/node";
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Capture screen or call Python service
   res.json({ success: true });
 }
@@ -170,6 +168,7 @@ volumes:
 #### Deploy to Cloud Platforms
 
 **AWS EC2:**
+
 ```bash
 # Connect to instance
 ssh -i key.pem ec2-user@instance-ip
@@ -182,6 +181,7 @@ docker run -d -p 80:3000 gameai-automation
 ```
 
 **Google Cloud Run:**
+
 ```bash
 # Build and push to Container Registry
 gcloud builds submit --tag gcr.io/PROJECT_ID/gameai-automation
@@ -194,6 +194,7 @@ gcloud run deploy gameai-automation \
 ```
 
 **DigitalOcean App Platform:**
+
 1. Push image to Docker Hub
 2. Connect GitHub repository
 3. Configure environment variables
@@ -294,20 +295,25 @@ pnpm add tailwindcss-purge
 ### Backend Optimization
 
 1. **Enable Compression**
+
 ```typescript
 import compression from "compression";
 app.use(compression());
 ```
 
 2. **Cache Strategies**
+
 ```typescript
-app.use(express.static('dist/spa', {
-  maxAge: '1d',
-  etag: false
-}));
+app.use(
+  express.static("dist/spa", {
+    maxAge: "1d",
+    etag: false,
+  }),
+);
 ```
 
 3. **Load Balancing**
+
 - Nginx reverse proxy
 - AWS ALB
 - Cloudflare load balancing
@@ -337,7 +343,7 @@ import jwt from "jsonwebtoken";
 app.post("/api/capture-screen", (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "Unauthorized" });
-  
+
   // Verify token and proceed
   // ...
 });
@@ -480,6 +486,7 @@ npm ls
 ## Conclusion
 
 Choose deployment based on your needs:
+
 - **Simple & Managed**: Netlify or Vercel
 - **Full Control**: Self-hosted Docker
 - **Scalability**: Kubernetes or cloud-native platforms

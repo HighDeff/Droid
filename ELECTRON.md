@@ -143,11 +143,7 @@ Add these scripts and configuration:
   "build": {
     "appId": "com.gameai.automation",
     "productName": "GameAI Automation",
-    "files": [
-      "dist/**/*",
-      "node_modules/**/*",
-      "package.json"
-    ],
+    "files": ["dist/**/*", "node_modules/**/*", "package.json"],
     "directories": {
       "buildResources": "public"
     },
@@ -210,11 +206,13 @@ pnpm electron-build
 ### Hot Reload Development
 
 1. Start Vite dev server:
+
 ```bash
 pnpm dev
 ```
 
 2. In another terminal, start Electron:
+
 ```bash
 pnpm electron-dev
 ```

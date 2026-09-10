@@ -21,6 +21,7 @@ pnpm dev
 ```
 
 This starts:
+
 - React frontend: http://localhost:5173
 - Express API: http://localhost:5173/api
 - Hot reload enabled
@@ -50,24 +51,28 @@ This starts:
 ## Common Tasks
 
 ### Click Something
+
 ```
 Name: Click button
 Description: click at 500,300
 ```
 
 ### Type Text
+
 ```
 Name: Type username
 Description: type "myusername"
 ```
 
 ### Scroll Page
+
 ```
 Name: Scroll down
 Description: scroll down 5 clicks
 ```
 
 ### Wait Before Action
+
 ```
 Name: Wait for page
 Description: wait 2 seconds
@@ -87,16 +92,19 @@ Can be changed in UI without restart.
 ## Troubleshooting
 
 ### "No screenshots appearing"
+
 - Check that browser has screen capture permissions
 - On macOS: System Preferences → Security & Privacy
 - Click "Continue" if permission prompt appears
 
 ### "Ollama connection error"
+
 - Verify endpoint URL in Settings
 - Check internet connection
 - Try fallback endpoint if available
 
 ### "Python service not found"
+
 - Ensure Python 3.8+ is installed
 - Run: `python3 --version`
 - Reinstall packages: `pip install -r python-service/requirements.txt`
@@ -211,6 +219,7 @@ Watch the tutorial at: https://example.com/tutorial
 **Ready to automate?** You're all set! Start with the dashboard and build from there.
 
 For detailed documentation, see:
+
 - SETUP.md - Full setup guide
 - DEPLOYMENT.md - Production deployment
 - ELECTRON.md - Desktop app guide

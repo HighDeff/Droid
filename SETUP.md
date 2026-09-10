@@ -31,6 +31,7 @@ pip install -r requirements.txt
 ```
 
 Key Python packages:
+
 - `pyautogui>=0.9.53` - Screen capture and automation
 - `Pillow>=10.0.0` - Image processing
 
@@ -76,6 +77,7 @@ pnpm dev
 ```
 
 This starts:
+
 - React frontend on http://localhost:5173
 - Express backend on http://localhost:5173/api
 - Both with hot reload
@@ -109,11 +111,13 @@ Tasks can be created with natural language descriptions:
 ### Configuration
 
 **LLM Settings:**
+
 - Configure Ollama endpoint in Dashboard → Settings → LLM
 - Default: https://remote.quantumpass.io/ollama/api/chat
 - Model: qwen2.5vl:7b (configurable)
 
 **Automation Settings:**
+
 - Capture Rate: 0.25 seconds (fixed, can be modified in code)
 - Status indicator shows Active/Inactive
 
@@ -203,6 +207,7 @@ The project is configured for Netlify/Vercel:
 5. Ensure Python service runs as a background worker (requires alternative setup)
 
 **Note**: Python automation service requires running on a system with screen capture capability. For cloud deployments, consider:
+
 - Running Python service locally and connecting via API
 - Using headless browser automation instead
 - Cloud-based screenshot services
@@ -229,6 +234,7 @@ See `ELECTRON.md` for detailed setup.
 **Issue**: "All capture methods failed"
 
 **Solutions**:
+
 1. Ensure app has screen capture permissions
 2. On macOS: Grant terminal/app permissions in System Preferences
 3. On Linux: Install `scrot` or `gnome-screenshot`
@@ -239,6 +245,7 @@ See `ELECTRON.md` for detailed setup.
 **Issue**: "Failed to connect to Ollama endpoint"
 
 **Solutions**:
+
 1. Verify Ollama is running: `ollama serve`
 2. Check endpoint URL in settings
 3. Verify firewall allows connection
@@ -249,6 +256,7 @@ See `ELECTRON.md` for detailed setup.
 **Issue**: "Task execution timeout"
 
 **Solutions**:
+
 1. Check Python environment is properly set up
 2. Verify pyautogui can access system
 3. Try simpler tasks first
@@ -257,6 +265,7 @@ See `ELECTRON.md` for detailed setup.
 ### Performance Issues
 
 **Solutions**:
+
 1. Reduce capture frequency in code (default 0.25s)
 2. Run Python service on faster machine
 3. Disable real-time AI analysis for batch tasks
@@ -269,6 +278,7 @@ See `ELECTRON.md` for detailed setup.
 Captures current screen
 
 **Response**:
+
 ```json
 {
   "success": true,
@@ -282,6 +292,7 @@ Captures current screen
 Analyzes screenshot with AI
 
 **Request**:
+
 ```json
 {
   "imageData": "data:image/png;base64,...",
@@ -290,6 +301,7 @@ Analyzes screenshot with AI
 ```
 
 **Response**:
+
 ```json
 {
   "success": true,
@@ -304,6 +316,7 @@ Analyzes screenshot with AI
 Executes a task
 
 **Request**:
+
 ```json
 {
   "task": {
@@ -318,6 +331,7 @@ Executes a task
 ```
 
 **Response**:
+
 ```json
 {
   "success": true,
@@ -371,6 +385,7 @@ Executes a task
 ## Contributing
 
 Contributions welcome! Please:
+
 1. Fork repository
 2. Create feature branch
 3. Make changes
@@ -379,6 +394,7 @@ Contributions welcome! Please:
 ## Changelog
 
 ### v1.0.0 (Initial Release)
+
 - Real-time screen capture
 - AI-powered analysis
 - Automated task execution
