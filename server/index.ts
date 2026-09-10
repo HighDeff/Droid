@@ -33,6 +33,10 @@ import {
   requireApiAccess,
   validateAdbEndpoint,
 } from "./security";
+import { assistantLiveRouter } from "./routes/assistant-live";
+import { assistantReportsRouter } from "./routes/assistant-reports";
+import { workflowRuntime } from "./workflow-runtime";
+import { redactSensitive } from "./security";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,6 +71,8 @@ export function createServer() {
     requireApiAccess,
     assistantConditionsRouter,
   );
+  app.use("/api/assistant/live", requireApiAccess, assistantLiveRouter);
+  app.use("/api/assistant/reports", requireApiAccess, assistantReportsRouter);
   app.use("/api", createApiRateLimiter(), requireApiAccess);
 
   // Example API routes
@@ -192,7 +198,7 @@ except Exception as e:
       source || "System",
       level || "INFO",
       message,
-      metadata,
+      redactSensitive(metadata),
     );
     res.json({ success: true, entry });
   });
@@ -483,5 +489,6 @@ except Exception as e:
     }
   });
 
+  workflowRuntime.start();
   return app;
 }

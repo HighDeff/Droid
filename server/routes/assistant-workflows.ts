@@ -7,6 +7,8 @@ import type {
   WorkflowGoalProgress,
 } from "@shared/assistant";
 import { assistantStateRepository } from "../assistant-state";
+import { workflowRuntime } from "../workflow-runtime";
+import { liveEvents } from "../live-events";
 
 const isoDate = z.string().datetime({ offset: true });
 const itemStatus = z.enum(["pending", "in_progress", "completed", "blocked"]);
@@ -265,5 +267,65 @@ assistantWorkflowsRouter.put("/:workflowId/progress", (req, res) => {
     sessionId,
     { goals: parsed.data.goals as WorkflowGoalProgress[] },
   );
+  res.json({ success: true, workflow: updated });
+});
+
+assistantWorkflowsRouter.post("/:workflowId/run", (req, res) => {
+  const sessionId = sessionIdFrom(req);
+  if (!requireSession(sessionId, res)) return;
+  const workflow = assistantStateRepository.getWorkflow(
+    req.params.workflowId,
+    sessionId,
+  );
+  if (!workflow)
+    return res
+      .status(404)
+      .json({ success: false, error: "Workflow not found" });
+  if (workflow.status !== "active") {
+    return res
+      .status(409)
+      .json({ success: false, error: "Only active workflows may run" });
+  }
+  const runtime = workflowRuntime.runNow(workflow.id, sessionId);
+  res.status(202).json({ success: true, workflow, runtime });
+});
+
+assistantWorkflowsRouter.get("/:workflowId/runtime", (req, res) => {
+  const sessionId = sessionIdFrom(req);
+  if (!requireSession(sessionId, res)) return;
+  const workflow = assistantStateRepository.getWorkflow(
+    req.params.workflowId,
+    sessionId,
+  );
+  if (!workflow)
+    return res
+      .status(404)
+      .json({ success: false, error: "Workflow not found" });
+  res.json({ success: true, runtime: workflowRuntime.status(workflow.id) });
+});
+
+assistantWorkflowsRouter.post("/:workflowId/stop", (req, res) => {
+  const sessionId = sessionIdFrom(req);
+  if (!requireSession(sessionId, res)) return;
+  const workflow = assistantStateRepository.getWorkflow(
+    req.params.workflowId,
+    sessionId,
+  );
+  if (!workflow)
+    return res
+      .status(404)
+      .json({ success: false, error: "Workflow not found" });
+  const updated = assistantStateRepository.updateWorkflow(
+    workflow.id,
+    sessionId,
+    {
+      status: "paused",
+      schedule: { ...workflow.schedule, enabled: false },
+    },
+  );
+  liveEvents.publish(sessionId, "workflow.stopped", {
+    workflowId: workflow.id,
+    reason: "stopped by user",
+  });
   res.json({ success: true, workflow: updated });
 });

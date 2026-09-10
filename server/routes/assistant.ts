@@ -1,6 +1,7 @@
 import { RequestHandler, Router } from "express";
 import { z } from "zod";
 import { assistantStateRepository } from "../assistant-state";
+import { liveEvents } from "../live-events";
 
 const itemStatus = z.enum(["pending", "in_progress", "completed", "blocked"]);
 const sessionStatus = z.enum(["active", "paused", "completed", "archived"]);
@@ -246,6 +247,10 @@ assistantRouter.put("/sessions/:id", (req, res) => {
     return res
       .status(404)
       .json({ success: false, error: "Assistant session not found" });
+  liveEvents.publish(req.params.id, "goal.changed", {
+    goals: updated.goals,
+    updatedAt: updated.updatedAt,
+  });
   res.json({ success: true, session: updated });
 });
 assistantRouter.delete("/sessions/:id", (req, res) => {

@@ -16,6 +16,7 @@ import {
   allowlistedActionSchema,
 } from "./assistant-execution";
 import { conditionSchema } from "./assistant-conditions";
+import { liveEvents } from "../live-events";
 
 const timingHint = z.enum(["now", "soon", "scheduled", "when_ready"]);
 const planStep = z.object({
@@ -234,8 +235,58 @@ assistantPlansRouter.put("/:planId", (req, res) => {
       approvalState: "proposed",
     },
   );
+  liveEvents.publish(sessionId, "goal.clarification", {
+    planId: req.params.planId,
+    clarifications: updated?.clarifications ?? [],
+  });
   res.json({ success: true, plan: updated });
 });
+
+assistantPlansRouter.post(
+  "/:planId/clarifications/:clarificationId",
+  (req, res) => {
+    const sessionId = String(req.query.sessionId ?? req.body?.sessionId ?? "");
+    if (!sessionId || !requireSession(sessionId, res)) return;
+    const answer = z
+      .object({ answer: z.string().trim().min(1).max(4000) })
+      .safeParse(req.body);
+    if (!answer.success)
+      return res.status(400).json({
+        success: false,
+        error: "A clarification answer is required",
+        issues: answer.error.issues,
+      });
+    const plan = assistantStateRepository.getPlan(req.params.planId, sessionId);
+    if (!plan)
+      return res
+        .status(404)
+        .json({ success: false, error: "Assistant plan not found" });
+    const clarification = plan.clarifications.find(
+      (item) => item.id === req.params.clarificationId,
+    );
+    if (!clarification)
+      return res
+        .status(404)
+        .json({ success: false, error: "Clarification not found" });
+    const updated = assistantStateRepository.updatePlan(
+      req.params.planId,
+      sessionId,
+      {
+        clarifications: plan.clarifications.map((item) =>
+          item.id === clarification.id
+            ? { ...item, answer: answer.data.answer }
+            : item,
+        ),
+      },
+    );
+    liveEvents.publish(sessionId, "goal.clarification.answered", {
+      planId: plan.id,
+      clarificationId: clarification.id,
+      answer: answer.data.answer,
+    });
+    res.json({ success: true, plan: updated });
+  },
+);
 
 function updateApproval(
   req: Request,
