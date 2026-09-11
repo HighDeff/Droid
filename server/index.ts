@@ -35,6 +35,9 @@ import {
 } from "./security";
 import { assistantLiveRouter } from "./routes/assistant-live";
 import { assistantReportsRouter } from "./routes/assistant-reports";
+import { verificationReportsRouter } from "./routes/verification-reports";
+import { schedulingRouter } from "./routes/scheduling";
+import { methodLearningRouter } from "./routes/method-learning";
 import { workflowRuntime } from "./workflow-runtime";
 import { redactSensitive } from "./security";
 
@@ -73,6 +76,9 @@ export function createServer() {
   );
   app.use("/api/assistant/live", requireApiAccess, assistantLiveRouter);
   app.use("/api/assistant/reports", requireApiAccess, assistantReportsRouter);
+  app.use("/api/assistant/verification", requireApiAccess, verificationReportsRouter);
+  app.use("/api/assistant/scheduling", requireApiAccess, schedulingRouter);
+  app.use("/api/assistant/method-learning", requireApiAccess, methodLearningRouter);
   app.use("/api", createApiRateLimiter(), requireApiAccess);
 
   // Example API routes

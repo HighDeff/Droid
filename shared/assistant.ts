@@ -424,6 +424,15 @@ export interface AssistantPlan {
   updatedAt: string;
   approvedAt?: string;
   rejectedAt?: string;
+  metadata?: {
+    learnedMethod?: {
+      successRate: number;
+      adaptationNotes: string;
+      lastSuccessfulAt: string;
+    };
+    totalSuccessfulRuns?: number;
+    [key: string]: unknown;
+  };
 }
 
 export interface OperationPack {

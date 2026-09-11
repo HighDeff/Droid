@@ -9,6 +9,8 @@ import type {
 } from "@shared/assistant";
 import { DurableStore, type StorageOptions } from "./durable-store";
 import { verifyObservation, type Observation } from "./visual-verification";
+import { methodLearningSystem, type LearningContext } from "./method-learning";
+import { RealTimeElementTracker } from "./element-tracking";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) =>
@@ -44,11 +46,13 @@ export class ExecutionStateRepository {
     string,
     { paused: boolean; cancelled: boolean }
   >();
+  private readonly elementTrackers = new Map<string, RealTimeElementTracker>();
 
   constructor(
     private readonly executeAction: SafeActionExecutor = defaultExecutor,
     optionsOrObserve: StorageOptions | ObservationProvider = {},
     observe: ObservationProvider = async () => ({}),
+    private readonly learningContext?: LearningContext,
   ) {
     const options =
       typeof optionsOrObserve === "function" ? {} : optionsOrObserve;
@@ -92,6 +96,10 @@ export class ExecutionStateRepository {
     this.executions.set(execution.id, execution);
     this.persist();
     this.controls.set(execution.id, { paused: false, cancelled: false });
+    
+    // Initialize element tracker for this execution
+    this.elementTrackers.set(execution.id, new RealTimeElementTracker(execution.id));
+    
     return execution;
   }
 
@@ -238,6 +246,16 @@ export class ExecutionStateRepository {
     execution.completedAt = now();
     this.addEvent(execution, "completed", "Execution completed");
     this.persist();
+    
+    // Learn from this execution if context is provided
+    if (this.learningContext) {
+      try {
+        methodLearningSystem.learnFromExecution(execution, plan, this.learningContext);
+      } catch (error) {
+        console.error("Failed to learn from execution:", error);
+      }
+    }
+    
     return execution;
   }
 
@@ -300,6 +318,24 @@ export class ExecutionStateRepository {
       step.id,
     );
     const observation = await this.observe(step, attempt);
+    
+    // Update element tracker with new analysis
+    const elementTracker = this.elementTrackers.get(execution.id);
+    if (elementTracker && observation.analysis) {
+      elementTracker.updateFromAnalysis(observation.analysis, observation.capture?.imageData);
+      
+      // Use element tracking for adaptive element location
+      if (step.adaptive?.verification?.elementLabel) {
+        const trackedElement = elementTracker.findElementsByLabel(step.adaptive.verification.elementLabel)[0];
+        if (trackedElement && trackedElement.stability > 0.7) {
+          // Adjust verification region based on tracked element position
+          if (step.adaptive.verification.region) {
+            step.adaptive.verification.region = trackedElement.region;
+          }
+        }
+      }
+    }
+    
     this.addEvent(
       execution,
       "analysis",
