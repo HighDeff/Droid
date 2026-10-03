@@ -18,6 +18,9 @@ from automation import (
     clear_and_type_at,
     focus_and_click,
     get_adb_devices,
+    get_adb_screen_size,
+    get_screen_size,
+    rescale_point,
     execute_adb_tap,
     execute_adb_swipe,
     execute_adb_text,
@@ -78,6 +81,44 @@ def main():
         target_pos = task.get("targetPosition", {})
         x = int(target_pos.get("x", task.get("x", payload.get("x", 960))))
         y = int(target_pos.get("y", task.get("y", payload.get("y", 540))))
+
+        # Rescale frame-space coordinates to real device pixels.
+        # The HUD/AI work in a normalized frame space (e.g. 1920x1080 or the
+        # actual screenshot size); the device may differ (phone, ultrawide).
+        frame_size = payload.get("frameSize", task.get("frameSize", None))
+        rescale_note = ""
+        if isinstance(frame_size, dict) and frame_size.get("width"):
+            try:
+                if target_device == "android":
+                    dev_size = get_adb_screen_size(device_id)
+                else:
+                    dev_size = get_screen_size()
+                if dev_size:
+                    ox, oy = x, y
+                    x, y = rescale_point(x, y, frame_size, dev_size)
+                    if (x, y) != (ox, oy):
+                        rescale_note = (
+                            f" Rescaled ({ox},{oy}) from "
+                            f"{frame_size.get('width')}x{frame_size.get('height')} "
+                            f"to device {dev_size[0]}x{dev_size[1]}."
+                        )
+            except Exception:
+                pass
+
+        def _rescale_drag(dx, dy):
+            """Rescale a drag-endpoint the same way as the primary point."""
+            if isinstance(frame_size, dict) and frame_size.get("width"):
+                try:
+                    dev = (
+                        get_adb_screen_size(device_id)
+                        if target_device == "android"
+                        else get_screen_size()
+                    )
+                    if dev:
+                        return rescale_point(dx, dy, frame_size, dev)
+                except Exception:
+                    pass
+            return (dx, dy)
         text_payload = task.get("textPayload", task.get("text", payload.get("text", "")))
         key_payload = task.get("keyPayload", task.get("key", payload.get("key", "enter")))
         # fallback: if text_payload empty but description contains quoted string, extract
@@ -89,7 +130,10 @@ def main():
 
         # Android Device Execution
         if target_device == "android":
-            if action in ["click", "tap"]:
+            if action in ["mouse_move", "hover", "move"]:
+                # Android has no hover cursor: acknowledge without touching.
+                explanation = f"Ignored hover move to ({x}, {y}) on Android (no cursor); taps are mirrored."
+            elif action in ["click", "tap"]:
                 execute_adb_tap(x, y, device_id)
                 explanation = f"Tapped Android screen at ({x}, {y}) via ADB."
             elif action in ["double_click", "double_tap"]:
@@ -101,6 +145,7 @@ def main():
                 drag_end = task.get("dragEndPosition", {})
                 x2 = int(drag_end.get("x", x))
                 y2 = int(drag_end.get("y", y - 300))
+                x2, y2 = _rescale_drag(x2, y2)
                 execute_adb_swipe(x, y, x2, y2, 400, device_id)
                 explanation = f"Swiped on Android from ({x}, {y}) to ({x2}, {y2}) via ADB."
             elif action in ["type", "clear_and_type", "type_text"]:
@@ -122,7 +167,7 @@ def main():
                 "targetDevice": "android",
                 "action": action,
                 "coordinates": {"x": x, "y": y},
-                "explanation": explanation,
+                "explanation": explanation + rescale_note,
                 "improved": True,
             }))
             return
@@ -170,7 +215,11 @@ def main():
         driftPx = int(task.get("driftPx", task.get("drift", 6)))
         variationMode = task.get("variationMode", task.get("movementMode", "variation"))
 
-        if action in ["click", "focus_and_click"]:
+        if action in ["mouse_move", "hover", "move"]:
+            import pyautogui as _pgm
+            _pgm.moveTo(x, y, duration=0.05)
+            explanation = f"Moved mouse to ({x}, {y}) on Desktop (follower mirror)."
+        elif action in ["click", "focus_and_click"]:
             click_mouse_human(x, y, dwell_ms=120, drift_px=driftPx)
             explanation = f"Moved mouse via cubic spline and clicked at ({x}, {y}) on Desktop (drift {driftPx}px, mode {variationMode})."
         elif action in ["double_click"]:
@@ -204,6 +253,7 @@ def main():
             drag_end = task.get("dragEndPosition", {})
             x2 = int(drag_end.get("x", x + 200))
             y2 = int(drag_end.get("y", y))
+            x2, y2 = _rescale_drag(x2, y2)
             pyautogui.moveTo(x, y, duration=0.3)
             pyautogui.dragTo(x2, y2, duration=0.6, button='left')
             explanation = f"Dragged from ({x}, {y}) to ({x2}, {y2}) on Desktop."
@@ -226,7 +276,7 @@ def main():
             "targetDevice": "desktop",
             "action": action,
             "coordinates": {"x": x, "y": y},
-            "explanation": explanation,
+            "explanation": explanation + rescale_note,
             "improved": True,
         }))
 
