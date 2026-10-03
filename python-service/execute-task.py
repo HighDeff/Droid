@@ -26,6 +26,7 @@ from automation import (
     execute_adb_text,
     execute_adb_keyevent,
     capture_screen_primary,
+    capture_adb_screen,
     move_mouse_human,
     click_mouse_human,
     type_text_human,
@@ -153,14 +154,46 @@ def main():
                 time.sleep(0.3)
                 execute_adb_text(text_payload, device_id)
                 explanation = f"Focused ({x}, {y}) and typed \"{text_payload}\" on Android via ADB."
+            elif action in ["type_no_focus"]:
+                execute_adb_text(text_payload, device_id)
+                explanation = f"Typed \"{text_payload}\" on Android via ADB (no focus tap; field already focused)."
             elif action in ["key", "press_key", "hotkey"]:
                 keycode_map = {"enter": 66, "back": 4, "home": 3, "tab": 61, "escape": 111}
                 code = keycode_map.get(key_payload.lower(), 66)
                 execute_adb_keyevent(code, device_id)
                 explanation = f"Sent keyevent {code} ({key_payload}) on Android via ADB."
+            elif action in ["screenshot"]:
+                shot = capture_adb_screen(device_id)
+                if shot:
+                    explanation = f"Captured Android screenshot via ADB ({len(shot)} chars)."
+                    print(json.dumps({
+                        "success": True,
+                        "targetDevice": "android",
+                        "action": action,
+                        "coordinates": {"x": x, "y": y},
+                        "explanation": explanation + rescale_note,
+                        "imageData": shot,
+                        "improved": True,
+                    }))
+                else:
+                    print(json.dumps({
+                        "success": False,
+                        "targetDevice": "android",
+                        "action": action,
+                        "error": "ADB screencap failed or returned empty data.",
+                    }))
+                return
             else:
-                execute_adb_tap(x, y, device_id)
-                explanation = f"Executed generic touch action at ({x}, {y}) on Android via ADB."
+                # Unknown action: REFUSE to guess. Previously this fell through
+                # to a generic tap the user never asked for.
+                print(json.dumps({
+                    "success": False,
+                    "targetDevice": "android",
+                    "action": action,
+                    "coordinates": {"x": x, "y": y},
+                    "error": f"Unknown action '{action}' on Android — refusing to guess. No tap performed.",
+                }))
+                return
 
             print(json.dumps({
                 "success": True,
@@ -191,6 +224,10 @@ def main():
             return
 
         # Desktop (Windows/PyAutoGUI) Native OS Execution
+        # NOTE: actions handled in this first chain set handled=True and skip
+        # the generic chain below. Without this, handled actions would fall
+        # through to the final else and fire a phantom extra click.
+        handled = False
         if action in ["stream_mouse_route", "play_route", "replay_route"]:
             route_points = task.get("routePoints", task.get("points", []))
             speed_mult = float(task.get("speedMultiplier", 1.0))
@@ -198,12 +235,14 @@ def main():
             is_drag_mode = bool(task.get("isDrag", False))
             stream_mouse_route(route_points, speed_multiplier=speed_mult, drift_px=drift, is_drag=is_drag_mode)
             explanation = f"Streamed continuous 60Hz mouse route ({len(route_points)} waypoints) across OS desktop."
+            handled = True
         elif action in ["activate_window", "focus_window"]:
             act_x = int(target_pos.get("x", 960))
             act_y = int(target_pos.get("y", 200))
             dwell = int(task.get("dwellMs", 150))
             activate_and_focus_window(act_x, act_y, dwell)
             explanation = f"Special window activation click dispatched at ({act_x}, {act_y}) with {dwell}ms focus lock."
+            handled = True
         elif action in ["relative_action", "relative_click", "relative_type"]:
             origin = task.get("appOrigin", {"x": 100, "y": 100})
             rel_u = int(task.get("relU", target_pos.get("x", 0)))
@@ -211,6 +250,38 @@ def main():
             sub_act = task.get("subAction", "click")
             res_data = execute_relative_action(origin.get("x", 0), origin.get("y", 0), rel_u, rel_v, sub_act, text_payload)
             explanation = f"Executed relative {sub_act} at ({rel_u}, {rel_v}) -> Absolute ({res_data['absoluteCoords']['x']}, {res_data['absoluteCoords']['y']})."
+            handled = True
+        elif action in ["screenshot"]:
+            shot = capture_screen_primary()
+            if shot and shot.startswith("data:image"):
+                explanation = f"Captured desktop screenshot ({len(shot)} chars)."
+                print(json.dumps({
+                    "success": True,
+                    "targetDevice": "desktop",
+                    "action": action,
+                    "coordinates": {"x": x, "y": y},
+                    "explanation": explanation + rescale_note,
+                    "imageData": shot,
+                    "improved": True,
+                }))
+            else:
+                print(json.dumps({
+                    "success": False,
+                    "targetDevice": "desktop",
+                    "action": action,
+                    "error": "Desktop screen capture failed.",
+                }))
+            return
+        if handled:
+            print(json.dumps({
+                "success": True,
+                "targetDevice": "desktop",
+                "action": action,
+                "coordinates": {"x": x, "y": y},
+                "explanation": explanation + rescale_note,
+                "improved": True,
+            }))
+            return
         # driftPx controlled by movementMode: exact=0, variation=6, live=8
         driftPx = int(task.get("driftPx", task.get("drift", 6)))
         variationMode = task.get("variationMode", task.get("movementMode", "variation"))
@@ -245,6 +316,11 @@ def main():
             time.sleep(0.2)
             type_text_human(text_payload, base_delay_ms=65, jitter_ms=35)
             explanation = f"Focused ({x}, {y}) and typed payload \"{text_payload}\"."
+        elif action in ["type_no_focus"]:
+            # Workflow plan type-actions: the field was focused by a prior
+            # click step, so type directly without moving/clicking.
+            type_text_human(text_payload, base_delay_ms=65, jitter_ms=35)
+            explanation = f"Typed payload \"{text_payload}\" with no focus click."
         elif action in ["clear_and_type"]:
             clear_and_type_at(x, y, text_payload)
             explanation = f"Cleared existing content and typed \"{text_payload}\" at ({x}, {y})."
@@ -268,8 +344,17 @@ def main():
             scroll(-5 if "down" in text_payload.lower() else 5)
             explanation = f"Scrolled viewport on Desktop."
         else:
-            click_mouse_human(x, y, dwell_ms=120, drift_px=6)
-            explanation = f"Executed default click action at ({x}, {y})."
+            # Unknown action: REFUSE to guess. Previously this fell through to
+            # a phantom click ("Executed default click action"), which made
+            # e.g. ocr_verify perform a real click the user never asked for.
+            print(json.dumps({
+                "success": False,
+                "targetDevice": "desktop",
+                "action": action,
+                "coordinates": {"x": x, "y": y},
+                "error": f"Unknown action '{action}' — refusing to guess. No click performed.",
+            }))
+            return
 
         print(json.dumps({
             "success": True,

@@ -50,6 +50,7 @@ export const handlePlanAndAct: RequestHandler = async (req, res) => {
       targetDevice,
       deviceId,
       frameSize,
+      context,
     } = req.body;
 
     if (!perceptionReport) {
@@ -58,11 +59,20 @@ export const handlePlanAndAct: RequestHandler = async (req, res) => {
         .json({ success: false, error: "Missing perceptionReport" });
     }
 
+    // Surface a user interaction so abandonment tracking stays honest.
+    aiPlannerEngine.noteUserActivity();
+
     const decision = await aiPlannerEngine.planAndFormulateAction(
       perceptionReport,
       userObjective,
       endpoint,
       model,
+      {
+        recentActions: context?.recentActions,
+        appTab: context?.appTab,
+        existingSteps: context?.existingSteps,
+        sessionId: context?.sessionId,
+      },
     );
 
     let executionResult: any = null;
@@ -73,12 +83,67 @@ export const handlePlanAndAct: RequestHandler = async (req, res) => {
         deviceId,
         frameSize,
       });
+      // Learn from every executed action: feed the outcome back into the
+      // planner's history so future decisions improve during the session.
+      const ok = !!executionResult?.success;
+      aiPlannerEngine.recordOutcome(
+        decision.nextAction,
+        ok,
+        ok, // dispatch success counts as verified at this layer; visual verification happens client-side
+        ok ? "dispatched to device" : String(executionResult?.error || "dispatch failed").slice(0, 120),
+      );
     }
 
     res.json({
       success: true,
       decision,
       executionResult,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+// 2b. AI step synthesis from a screenshot: when the user has no steps at
+// all, the planner forms a purpose hypothesis and creates proper steps from
+// the detected elements. This is what powers "RUN ON PC" with an empty
+// sequence — steps genuinely derived from screenshot AI interpretation.
+export const handleSynthesizeSteps: RequestHandler = async (req, res) => {
+  try {
+    const { perceptionReport, userObjective, context } = req.body;
+    if (!perceptionReport) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing perceptionReport" });
+    }
+    aiPlannerEngine.noteUserActivity();
+    const needsPurpose =
+      !userObjective || userObjective.trim() === "" || userObjective === "auto";
+    const purpose = aiPlannerEngine.inferPurpose(perceptionReport, {
+      recentActions: context?.recentActions,
+      appTab: context?.appTab,
+    });
+    const steps = aiPlannerEngine.synthesizeSteps(perceptionReport, purpose);
+    res.json({
+      success: true,
+      purpose: needsPurpose ? purpose : null,
+      steps: steps.map((s) => ({
+        id: s.id,
+        name: s.title,
+        action:
+          s.actionType === "type_text"
+            ? "type_text"
+            : s.actionType === "wait"
+              ? "wait"
+              : "click",
+        x: s.x,
+        y: s.y,
+        text: s.textPayload || "",
+        delayMs: s.delayMs,
+      })),
     });
   } catch (err) {
     res.status(500).json({
@@ -373,3 +438,59 @@ export async function dispatchActionToPython(
     }
   });
 }
+
+/**
+ * Record the outcome of a client-executed action (AI Decide loop,
+ * live-aware repeats): verifies the visual outcome against a fresh
+ * perception, feeds success/verification into the planner's learning
+ * history, and returns the abandonment verdict so loops can wrap up
+ * gracefully when the user stops driving / no progress is made.
+ */
+export const handleRecordOutcome: RequestHandler = async (req, res) => {
+  try {
+    const {
+      action,
+      success,
+      previousPerception,
+      currentPerception,
+      expectedChange,
+      maxIdleCycles,
+    } = req.body ?? {};
+    if (!action) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing action" });
+    }
+    aiPlannerEngine.noteUserActivity();
+    let verified = false;
+    let feedback = "no fresh perception provided — outcome recorded as unverified";
+    if (previousPerception && currentPerception) {
+      const v = await aiPlannerEngine.verifyActionOutcome(
+        previousPerception,
+        currentPerception,
+        {
+          expectedChange: expectedChange || "a visible change",
+          targetRegion: { x: 0, y: 0, width: 0, height: 0 },
+          successCondition: "",
+          retryStrategy: "re-ground the target and retry",
+        },
+      );
+      verified = v.verified;
+      feedback = v.feedback;
+    }
+    aiPlannerEngine.recordOutcome(
+      action,
+      !!success,
+      verified,
+      feedback.slice(0, 200),
+    );
+    const abandonment = aiPlannerEngine.checkAbandonment(
+      typeof maxIdleCycles === "number" ? maxIdleCycles : 6,
+    );
+    res.json({ success: true, verified, feedback, abandonment });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+};
