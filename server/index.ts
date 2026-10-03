@@ -15,6 +15,8 @@ import {
   handleAutonomousStep,
   handleRecalibrateStep,
   handleAdaptiveRetry,
+  handleSynthesizeSteps,
+  handleRecordOutcome,
 } from "./routes/dual-ai-pipeline";
 import { centralLogHub } from "./log-hub";
 import { spawn } from "child_process";
@@ -38,12 +40,6 @@ import { assistantReportsRouter } from "./routes/assistant-reports";
 import { verificationReportsRouter } from "./routes/verification-reports";
 import { schedulingRouter } from "./routes/scheduling";
 import { methodLearningRouter } from "./routes/method-learning";
-import { dragBenchmarkRouter } from "./routes/drag-benchmark-routes";
-import { reboundStoryRouter } from "./routes/rebound-story-routes";
-import { routeFlowRouter } from "./routes/route-flow-routes";
-import { scenarioWatchdogRouter } from "./routes/scenario-watchdog-routes";
-import { visionWorkflowRouter } from "./routes/vision-workflow-routes";
-import { v2FeaturesRouter } from "./routes/v2-features-routes";
 import { workflowRuntime } from "./workflow-runtime";
 import { redactSensitive } from "./security";
 
@@ -85,13 +81,11 @@ export function createServer() {
   app.use("/api/assistant/verification", requireApiAccess, verificationReportsRouter);
   app.use("/api/assistant/scheduling", requireApiAccess, schedulingRouter);
   app.use("/api/assistant/method-learning", requireApiAccess, methodLearningRouter);
-  // Feature routers (previously defined but never mounted)
-  app.use("/api/benchmark", requireApiAccess, dragBenchmarkRouter);
-  app.use("/api/rebound", requireApiAccess, reboundStoryRouter);
-  app.use("/api/route-flow", requireApiAccess, routeFlowRouter);
-  app.use("/api/watchdog", requireApiAccess, scenarioWatchdogRouter);
-  app.use("/api/vision-workflow", requireApiAccess, visionWorkflowRouter);
-  app.use("/api/v2", requireApiAccess, v2FeaturesRouter);
+  // NOTE: six feature routers (benchmark, rebound, route-flow, watchdog,
+  // vision-workflow, v2) were previously mounted here but every handler
+  // returned hardcoded fake data with zero client callers. They were removed
+  // (2026-10-03) rather than keep lying about success. Re-add them only with
+  // real implementations.
   app.use("/api", createApiRateLimiter(), requireApiAccess);
 
   // Example API routes
@@ -111,6 +105,8 @@ export function createServer() {
   // Dual-AI Perception, Reasoning Planner & Adaptive Retry Pipeline
   app.post("/api/ai/describe-screen", handleDescribeScreen);
   app.post("/api/ai/plan-and-act", handlePlanAndAct);
+  app.post("/api/ai/synthesize-steps", handleSynthesizeSteps);
+  app.post("/api/ai/record-outcome", handleRecordOutcome);
   app.post("/api/ai/autonomous-step", handleAutonomousStep);
   app.post("/api/ai/recalibrate-step", handleRecalibrateStep);
   app.post("/api/ai/adaptive-retry", handleAdaptiveRetry);
