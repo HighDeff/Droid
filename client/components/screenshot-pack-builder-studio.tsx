@@ -26,6 +26,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useFrameMapper } from "@/lib/frame-canvas";
 import {
   Card,
   CardContent,
@@ -38,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
 import { TabContextualSettingsBar } from "./tab-contextual-settings-bar";
+import { apiUrl } from "@/lib/api";
 
 export interface ActionFrame {
   id: string;
@@ -79,6 +81,7 @@ export const ScreenshotPackBuilderStudio: React.FC<
 > = ({ currentLiveScreenshot }) => {
   const [packName, setPackName] = useState("User_Authentication_Action_Pack");
   const [targetApp, setTargetApp] = useState("Web Portal / Desktop Client");
+  const { frame: packFrame, onMediaLoad, toFrame } = useFrameMapper();
   const [frames, setFrames] = useState<ActionFrame[]>([
     {
       id: "f_1",
@@ -172,7 +175,7 @@ export const ScreenshotPackBuilderStudio: React.FC<
               : `Frame ${i + 1}: ${f.title}`,
           }));
           if (currentLiveScreenshot) {
-            fetch("/api/compare-screenshots", {
+            fetch(apiUrl("/api/compare-screenshots"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -246,9 +249,7 @@ export const ScreenshotPackBuilderStudio: React.FC<
 
   // Re-pin target on click
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
+    const { x, y } = toFrame(e);
 
     setFrames((prev) =>
       prev.map((f) =>
@@ -292,7 +293,7 @@ export const ScreenshotPackBuilderStudio: React.FC<
       `⚡ Dispatching "${selectedFrame.action.toUpperCase()}" at (${selectedFrame.targetCoords.x}, ${selectedFrame.targetCoords.y}) to Live OS...`,
     );
     try {
-      const res = await fetch("/api/execute-task", {
+      const res = await fetch(apiUrl("/api/execute-task"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -534,19 +535,21 @@ export const ScreenshotPackBuilderStudio: React.FC<
             <CardContent className="p-4">
               <div
                 onClick={handleCanvasClick}
-                className="relative w-full aspect-video bg-slate-950 rounded-xl border border-slate-800 overflow-hidden cursor-crosshair group"
+                style={{ aspectRatio: `${packFrame.width} / ${packFrame.height}` }}
+                className="relative w-full bg-slate-950 rounded-xl border border-slate-800 overflow-hidden cursor-crosshair group"
               >
                 <img
                   src={selectedFrame.screenshotUrl}
                   alt={selectedFrame.title}
+                  onLoad={onMediaLoad}
                   className="w-full h-full object-contain pointer-events-none"
                 />
 
                 {/* Animated AI Target Marker */}
                 <div
                   style={{
-                    left: `${(selectedFrame.targetCoords.x / 1920) * 100}%`,
-                    top: `${(selectedFrame.targetCoords.y / 1080) * 100}%`,
+                    left: `${(selectedFrame.targetCoords.x / packFrame.width) * 100}%`,
+                    top: `${(selectedFrame.targetCoords.y / packFrame.height) * 100}%`,
                   }}
                   className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none animate-bounce"
                 >
