@@ -381,17 +381,21 @@ export default function Dashboard({
     });
   const runAbortRef = useRef<AbortController | null>(null);
 
-  const handleRunSequence = async () => {
-    if (sequence.length === 0 || isSequenceRunning) return;
+  /**
+   * Core sequence runner — takes the steps to run as an argument so callers
+   * that just synthesized steps don't close over stale (empty) state.
+   */
+  const runSequenceSteps = async (steps: SequenceStep[]) => {
+    if (steps.length === 0 || isSequenceRunning) return;
     runAbortRef.current?.abort();
     const abortCtrl = new AbortController();
     runAbortRef.current = abortCtrl;
     setIsSequenceRunning(true);
     sequenceRunningRef.current = true;
     setSequence((prev) => prev.map((s) => ({ ...s, status: "pending" })));
-    for (let i = 0; i < sequence.length; i++) {
+    for (let i = 0; i < steps.length; i++) {
       if (!sequenceRunningRef.current) break;
-      const current = sequence[i];
+      const current = steps[i];
       setActiveStepId(current.id);
       setSequence((prev) =>
         prev.map((s) =>
@@ -489,6 +493,8 @@ export default function Dashboard({
     setIsSequenceRunning(false);
     setActiveStepId(null);
   };
+  /** Run the current editor sequence (HUD Run button). */
+  const handleRunSequence = () => runSequenceSteps(sequence);
 
   /**
    * Single choke point for one-shot device actions triggered from Dashboard
@@ -536,17 +542,6 @@ export default function Dashboard({
         aiLiveUrlRef.current = data.imageData;
         setAiLiveUrl(data.imageData);
         setLiveHistory30((prev) => [data.imageData, ...prev].slice(0, 30));
-        if (false && isReal) {
-          if (!wasLive) setScreenshotUrl(data.imageData);
-          try {
-            await fetch(apiUrl("/api/analyze-screenshot"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ imageData: data.imageData }),
-            });
-          } catch {}
-          return;
-        }
         setScreenshotUrl(data.imageData);
       }
     } catch (e) {
@@ -585,7 +580,7 @@ export default function Dashboard({
         );
     }
   }, [targetDevice]);
-  const handleTriggerDescribeScreen = async () => {
+  const handleTriggerDescribeScreen = async (signal?: AbortSignal) => {
     const liveImg = aiLiveUrl || screenshotUrl;
     if (!liveImg) {
       setVerificationBadge({
@@ -600,6 +595,11 @@ export default function Dashboard({
       status: "verifying",
       message: "Perceiving live screen via AI #1...",
     });
+    // Escape hatch: the vision model can hang — never wait forever.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 45000);
+    const onExternalAbort = () => ctrl.abort();
+    signal?.addEventListener("abort", onExternalAbort, { once: true });
     try {
       const res = await fetch(apiUrl("/api/ai/describe-screen"), {
         method: "POST",
@@ -609,6 +609,7 @@ export default function Dashboard({
           model: "qwen2.5vl:7b",
           frameSize: hudFrameSize,
         }),
+        signal: ctrl.signal,
       });
       const data = await res.json();
       if (data.success && data.report) {
@@ -634,13 +635,18 @@ export default function Dashboard({
         });
         setTimeout(() => setVerificationBadge(null), 3000);
       }
-    } catch (e) {
+    } catch (e: any) {
       setVerificationBadge({
         status: "failed",
-        message: "Perceive error: " + String(e).slice(0, 50),
+        message:
+          e?.name === "AbortError"
+            ? "Perceive timed out (45s) — vision model hung, aborted"
+            : "Perceive error: " + String(e).slice(0, 50),
       });
       setTimeout(() => setVerificationBadge(null), 3000);
     } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onExternalAbort);
       setIsPerceiving(false);
     }
     return null;
@@ -887,6 +893,22 @@ export default function Dashboard({
         targetDevice,
         deviceId: selectedAdbDevice,
         frameSize: hudFrameSize,
+        context: {
+          // Give the planner memory: recent actions, the app tab the user is
+          // on, and any steps already configured — so it can infer purpose,
+          // synthesize steps when none exist, and refine instead of guessing.
+          recentActions: executionHistory
+            .slice(0, 8)
+            .map((h: any) => h.stepName || h.action || "")
+            .filter(Boolean),
+          appTab: currentTab,
+          existingSteps: sequence.map((s: any) => ({
+            name: s.name,
+            action: s.action,
+          })),
+          sessionId:
+            localStorage.getItem("assistant_session_id") || undefined,
+        },
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -952,7 +974,8 @@ export default function Dashboard({
             ].slice(0, 20),
           );
         } else {
-          // LIVE INTERACT — then re-perceive to verify the change.
+          // LIVE INTERACT — execute, then re-perceive to VERIFY the visual
+          // outcome and feed it into the planner's learning history.
           setVerificationBadge({
             status: "verifying",
             message: `🤖 AI interacting: ${act.title}`,
@@ -968,10 +991,49 @@ export default function Dashboard({
             keyPayload: act.keyPayload || "enter",
             delayMs: act.delayMs || 500,
           });
+          // Fresh perception for honest outcome verification.
+          const afterReport = await handleTriggerDescribeScreen().catch(
+            () => null,
+          );
+          let verifiedNote = "";
+          try {
+            const rec = await fetch(apiUrl("/api/ai/record-outcome"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: act,
+                success: !!execRes?.success,
+                previousPerception: report,
+                currentPerception:
+                  afterReport && !afterReport.degraded ? afterReport : null,
+                expectedChange: act.title,
+              }),
+            });
+            const recData = await rec.json().catch(() => ({}));
+            if (recData.success) {
+              verifiedNote = recData.verified
+                ? "✓ visually verified"
+                : "⚠ not visually verified";
+              if (recData.abandonment?.abandoned) {
+                // Graceful completion: no progress for a while — wrap up
+                // instead of looping forever.
+                setVerificationBadge({
+                  status: "failed",
+                  message: `🏁 AI Decide wrapped up: ${recData.abandonment.wrapUpSummary?.slice(0, 140) || "no progress"}`,
+                });
+                setAiThinking((t) =>
+                  t ? { ...t, isThinking: false } : t,
+                );
+                aiDecideTokenRef.current++;
+                setAiDecideActive(false);
+                break;
+              }
+            }
+          } catch {}
           setExecutionHistory((prev) =>
             [
               {
-                stepName: act.title,
+                stepName: `${act.title}${verifiedNote ? ` (${verifiedNote})` : ""}`,
                 status: execRes?.success ? "completed" : "failed",
                 timestamp: Date.now(),
                 thought: decision.thinking?.reasoning,
@@ -1005,6 +1067,115 @@ export default function Dashboard({
       setAiDecideActive(false);
       setVerificationBadge(null);
       setAiThinking((t) => (t ? { ...t, isThinking: false } : t));
+    }
+  };
+
+  /**
+   * RUN with AI-derived steps: perceives the live screen, asks the planner to
+   * form a purpose hypothesis and synthesize proper steps from the detected
+   * elements, adds them to the sequence, then runs them for real.
+   * Returns true when it handled the run (so the HUD doesn't show "no steps").
+   */
+  const handleSynthesizeAndRun = async (): Promise<boolean> => {
+    // Esc / STOP must be able to break out of synthesis: tie it to the
+    // shared run abort controller.
+    runAbortRef.current?.abort();
+    const abortCtrl = new AbortController();
+    runAbortRef.current = abortCtrl;
+    try {
+      setVerificationBadge({
+        status: "verifying",
+        message: "👁 Perceiving screen for AI step synthesis…",
+      });
+      const report = await handleTriggerDescribeScreen(abortCtrl.signal);
+      if (abortCtrl.signal.aborted) return false;
+      if (!report || report.degraded) {
+        setVerificationBadge({
+          status: "failed",
+          message: "Perception degraded — cannot derive steps from screen",
+        });
+        return false;
+      }
+      const synthTimer = setTimeout(() => abortCtrl.abort(), 60000);
+      let res: Response;
+      try {
+        res = await fetch(apiUrl("/api/ai/synthesize-steps"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            perceptionReport: report,
+            userObjective: userObjective || "auto",
+            context: {
+              recentActions: executionHistory
+                .slice(0, 8)
+                .map((h: any) => h.stepName || h.action || "")
+                .filter(Boolean),
+              appTab: currentTab,
+            },
+          }),
+          signal: abortCtrl.signal,
+        });
+      } finally {
+        clearTimeout(synthTimer);
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!data.success || !data.steps?.length) {
+        setVerificationBadge({
+          status: "failed",
+          message: "AI could not derive steps from this screen",
+        });
+        return false;
+      }
+      if (data.purpose) {
+        setVerificationBadge({
+          status: "verifying",
+          message: `🤖 Purpose: ${data.purpose.summary} — running ${data.steps.length} AI-derived steps`,
+        });
+      }
+      const newSteps: SequenceStep[] = (data.steps as any[])
+        // Never execute empty typing — planner must not emit type steps with no text.
+        .filter(
+          (s: any) =>
+            !(
+              (s.action === "type_text" || s.action === "clear_and_type") &&
+              !(s.text || "").trim()
+            ),
+        )
+        .map((s: any, idx: number) => ({
+          id: `ai_step_${Date.now()}_${idx}`,
+          stepNumber: idx + 1,
+          name: s.name || `AI step ${idx + 1}`,
+          action: s.action || "click",
+          x: Math.round(s.x),
+          y: Math.round(s.y),
+          text: s.text || "",
+          delayMs: s.delayMs || 500,
+          status: "pending",
+        }),
+      );
+      // Show them in the editor AND run this exact array — no stale closure.
+      setSequence((prev) => [
+        ...prev,
+        ...newSteps.map((s, i) => ({ ...s, stepNumber: prev.length + i + 1 })),
+      ]);
+      await runSequenceSteps(newSteps);
+      return true;
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        setVerificationBadge({
+          status: "failed",
+          message: "Step synthesis aborted (Esc)",
+        });
+        setTimeout(() => setVerificationBadge(null), 2500);
+        return false;
+      }
+      setVerificationBadge({
+        status: "failed",
+        message: `Step synthesis failed: ${String(e).slice(0, 60)}`,
+      });
+      return false;
+    } finally {
+      if (runAbortRef.current === abortCtrl) runAbortRef.current = null;
     }
   };
 
@@ -1592,7 +1763,7 @@ export default function Dashboard({
             <Button
               size="sm"
               variant="ghost"
-              onClick={handleTriggerDescribeScreen}
+              onClick={() => void handleTriggerDescribeScreen()}
               disabled={isPerceiving}
               className={`h-7 text-xs font-mono font-bold gap-1 border ${isPerceiving ? "bg-cyan-950 text-cyan-300 border-cyan-700 animate-pulse" : "bg-slate-900 text-cyan-300 border-cyan-800/50 hover:bg-cyan-950"}`}
             >
@@ -1917,6 +2088,7 @@ export default function Dashboard({
                   onStopSequence={handleStopSequence}
                   onAiDecideMode={handleAiDecideMode}
                   onLearningAutoAct={handleLearningAutoAct}
+                  onSynthesizeAndRun={handleSynthesizeAndRun}
                   userObjective={userObjective}
                   onFrameSizeChange={setHudFrameSize}
                   onAddStep={handleAddSequenceStep}
@@ -2082,6 +2254,7 @@ export default function Dashboard({
                   onMoveStep={handleMoveStep}
                   onClearSequence={() => setSequence([])}
                   onSelectStep={setActiveStepId}
+                  onImportSteps={(steps) => setSequence(steps)}
                 />
 
                 <MainScreenLoopVerificationHub
@@ -2284,9 +2457,27 @@ export default function Dashboard({
           <TabsContent value="mouse-route" className="space-y-6">
             <ContinuousMouseRoutePlayer
               currentLiveScreenshot={aiLiveUrl || screenshotUrl}
-              onDispatchRouteToOS={(pts) =>
-                pts.forEach((p) => handleAddSequenceStep(p.x, p.y))
-              }
+              onDispatchRouteToOS={(pts) => {
+                // Sample at most ~12 evenly spaced waypoints so the sequence
+                // stays usable instead of one step per recorded point.
+                const maxSteps = 12;
+                const stride = Math.max(1, Math.floor(pts.length / maxSteps));
+                const sampled = pts.filter((_, i) => i % stride === 0);
+                if (
+                  sampled[sampled.length - 1] !== pts[pts.length - 1] &&
+                  sampled.length < maxSteps
+                ) {
+                  sampled.push(pts[pts.length - 1]);
+                }
+                sampled.forEach((p, i) =>
+                  handleAddSequenceStep({
+                    x: Math.round(p.x),
+                    y: Math.round(p.y),
+                    name: `Route waypoint ${i + 1}`,
+                    action: p.is_click ? "click" : "click",
+                  } as any),
+                );
+              }}
             />
           </TabsContent>
           <TabsContent value="backprop" className="space-y-6">
