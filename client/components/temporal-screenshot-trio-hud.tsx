@@ -51,6 +51,8 @@ import {
 } from "@/components/ui/select";
 import { TabContextualSettingsBar } from "./tab-contextual-settings-bar";
 import { SequenceStep, AIThinkingState } from "./live-screen-hud";
+import { apiUrl } from "@/lib/api";
+import { useFrameMapper } from "@/lib/frame-canvas";
 
 export interface TemporalFrameData {
   id: string;
@@ -113,7 +115,63 @@ interface TemporalScreenshotTrioHUDProps {
     action: string,
   ) => void;
   perceptionElements?: any[];
+  targetDevice?: "desktop" | "android";
+  deviceId?: string | null;
 }
+
+/**
+ * One trio frame viewport. Measures its own image so the target marker is
+ * positioned against the real frame aspect ratio instead of a fixed 16:9 box.
+ */
+const MeasuredTrioFrame: React.FC<{
+  imageUrl: string;
+  title: string;
+  targetCoords: { x: number; y: number };
+  showMarker: boolean;
+  isCurrent: boolean;
+  cornerBadge?: React.ReactNode;
+}> = ({ imageUrl, title, targetCoords, showMarker, isCurrent, cornerBadge }) => {
+  const { frame, onMediaLoad } = useFrameMapper();
+  return (
+    <div
+      style={{ aspectRatio: `${frame.width} / ${frame.height}` }}
+      className="relative w-full rounded-lg overflow-hidden bg-slate-950 border border-slate-800 group"
+    >
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt={title}
+          onLoad={onMediaLoad}
+          className="w-full h-full object-contain bg-black"
+          style={{ imageRendering: "auto" }}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">
+          No live frame
+        </div>
+      )}
+      {showMarker && (
+        <div
+          style={{
+            left: `${(targetCoords.x / frame.width) * 100}%`,
+            top: `${(targetCoords.y / frame.height) * 100}%`,
+          }}
+          className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none ${isCurrent ? "animate-bounce" : ""}`}
+        >
+          <div
+            className={`p-1.5 rounded-full border-2 ${isCurrent ? "bg-cyan-500 border-white shadow-lg shadow-cyan-500/80" : "bg-emerald-500 border-white/80"}`}
+          >
+            <Crosshair className="w-3.5 h-3.5 text-black" />
+          </div>
+          <span className="mt-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold bg-black/90 text-cyan-300 border border-cyan-800 whitespace-nowrap">
+            ({targetCoords.x}, {targetCoords.y})
+          </span>
+        </div>
+      )}
+      {cornerBadge}
+    </div>
+  );
+};
 
 export const TemporalScreenshotTrioHUD: React.FC<
   TemporalScreenshotTrioHUDProps
@@ -127,6 +185,8 @@ export const TemporalScreenshotTrioHUD: React.FC<
   onExecuteWorkaround,
   onTriggerStepAction,
   perceptionElements = [],
+  targetDevice = "desktop",
+  deviceId = null,
 }) => {
   // Live recording ring buffer - actual frames from live recording (no placeholders)
   const [liveRing, setLiveRing] = useState<AIHistoryFrameRecord[]>([]);
@@ -342,7 +402,7 @@ export const TemporalScreenshotTrioHUD: React.FC<
         x: 100,
         y: 100,
       };
-      await fetch("/api/execute-task", {
+      await fetch(apiUrl("/api/execute-task"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -360,7 +420,7 @@ export const TemporalScreenshotTrioHUD: React.FC<
       setStatusLog(
         `✓ Workaround executed on live OS via PyAutoGUI at (${act.x || ""},${act.y || ""})`,
       );
-      fetch("/api/logs", {
+      fetch(apiUrl("/api/logs"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -656,7 +716,7 @@ export const TemporalScreenshotTrioHUD: React.FC<
                   onClick={async () => {
                     // Actual pyautogui dispatch for selected history frame
                     const c = selectedHistory.coords || { x: 960, y: 540 };
-                    await fetch("/api/execute-task", {
+                    await fetch(apiUrl("/api/execute-task"), {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({
@@ -784,38 +844,20 @@ export const TemporalScreenshotTrioHUD: React.FC<
                 </div>
               </CardHeader>
               <CardContent className="p-3 space-y-2">
-                <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-slate-950 border border-slate-800 group">
-                  {hasImage ? (
-                    <SafeImage src={fr.imageUrl} alt={fr.title} />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">
-                      No live frame
-                    </div>
-                  )}
-                  {hasImage && fr.targetCoords.x !== 0 && (
-                    <div
-                      style={{
-                        left: `${(fr.targetCoords.x / 1920) * 100}%`,
-                        top: `${(fr.targetCoords.y / 1080) * 100}%`,
-                      }}
-                      className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none ${isCurrent ? "animate-bounce" : ""}`}
-                    >
-                      <div
-                        className={`p-1.5 rounded-full border-2 ${isCurrent ? "bg-cyan-500 border-white shadow-lg shadow-cyan-500/80" : "bg-emerald-500 border-white/80"}`}
-                      >
-                        <Crosshair className="w-3.5 h-3.5 text-black" />
+                <MeasuredTrioFrame
+                  imageUrl={fr.imageUrl}
+                  title={fr.title}
+                  targetCoords={fr.targetCoords}
+                  showMarker={hasImage && fr.targetCoords.x !== 0}
+                  isCurrent={isCurrent}
+                  cornerBadge={
+                    isLiveStreamActive && isCurrent ? (
+                      <div className="absolute top-1 right-1 px-1 py-0.5 rounded bg-red-950/90 text-[7px] font-bold text-red-300 border border-red-800">
+                        FROZEN ANTI-LOOP
                       </div>
-                      <span className="mt-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold bg-black/90 text-cyan-300 border border-cyan-800 whitespace-nowrap">
-                        ({fr.targetCoords.x}, {fr.targetCoords.y})
-                      </span>
-                    </div>
-                  )}
-                  {isLiveStreamActive && isCurrent && (
-                    <div className="absolute top-1 right-1 px-1 py-0.5 rounded bg-red-950/90 text-[7px] font-bold text-red-300 border border-red-800">
-                      FROZEN ANTI-LOOP
-                    </div>
-                  )}
-                </div>
+                    ) : undefined
+                  }
+                />
                 <div className="text-[10px] text-slate-300 font-bold truncate">
                   {fr.title}
                 </div>
@@ -859,14 +901,15 @@ export const TemporalScreenshotTrioHUD: React.FC<
                         size="sm"
                         onClick={async () => {
                           setStatusLog(
-                            `✨ Dispatching ${fr.actionType} @ (${fr.targetCoords.x},${fr.targetCoords.y}) via PyAutoGUI...`,
+                            `✨ Dispatching ${fr.actionType} @ (${fr.targetCoords.x},${fr.targetCoords.y}) via ${targetDevice === "android" ? "ADB" : "PyAutoGUI"}...`,
                           );
                           try {
-                            await fetch("/api/execute-task", {
+                            await fetch(apiUrl("/api/execute-task"), {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
-                                targetDevice: "desktop",
+                                targetDevice,
+                                deviceId,
                                 task: {
                                   id: `trio_${fr.id}_${Date.now()}`,
                                   name: fr.title,
@@ -880,7 +923,7 @@ export const TemporalScreenshotTrioHUD: React.FC<
                               }),
                             });
                             setStatusLog(`✓ Dispatched on live OS`);
-                            fetch("/api/logs", {
+                            fetch(apiUrl("/api/logs"), {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
@@ -901,7 +944,7 @@ export const TemporalScreenshotTrioHUD: React.FC<
                         className="w-full h-7 text-[10px] font-mono font-bold bg-amber-600 hover:bg-amber-500 text-white shadow-sm"
                       >
                         <Sparkles className="w-3 h-3 mr-1 text-yellow-200" />{" "}
-                        Execute on Live OS (PyAutoGUI)
+                        Execute on {targetDevice === "android" ? "Android (ADB)" : "Live OS"}
                       </Button>
                     </div>
                   </CollapsibleContent>
