@@ -121,9 +121,16 @@ export class AIPlannerActorEngine {
 You receive a Vision Perception Report of the active user desktop/application screen.
 Your job is to:
 1. THINK systematically (Observation -> Reasoning -> Strategic Plan).
-2. REORGANIZE and refine the high-level Goals and actionable SubTasks.
-3. FORMULATE the exact immediate next Action with (X,Y) coordinates and delay.
-4. SPECIFY the Verification Rule to validate whether the action succeeded visually.
+2. DECIDE: INTERACT or WATCH. If the screen shows moving elements, animations
+   in progress, loading spinners, obstacles (modals, popups, permission
+   dialogs), or the state is still settling, choose WATCH: return a nextAction
+   with actionType "wait", a clear title like "Watching: <reason>", and the
+   reason in your reasoning. Only choose INTERACT when the target is stable
+   and the action is safe to perform now.
+3. REORGANIZE and refine the high-level Goals and actionable SubTasks.
+4. FORMULATE the exact immediate next Action with (X,Y) coordinates and delay
+   (or the "wait" watch action from step 2).
+5. SPECIFY the Verification Rule to validate whether the action succeeded visually.
 
 Respond with STRICT JSON matching this schema:
 {

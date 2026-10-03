@@ -5,35 +5,30 @@ import {
   Camera,
   Check,
   ChevronDown,
-  CircleHelp,
   Clock3,
   FileImage,
-  FolderKanban,
   LayoutDashboard,
   Lightbulb,
   ListChecks,
-  Menu,
-  MoreHorizontal,
+  Monitor,
   PanelRight,
   Play,
   Plus,
   ScanSearch,
-  Settings2,
   Sparkles,
   Target,
-  Upload,
   Workflow,
   Video,
-  X,
   Zap,
 } from "lucide-react";
-import type { ComponentProps } from "react";
+import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/api";
 import { CaptureSourcePanel } from "./capture-source-panel";
 import { InstructionPlanningPanel } from "@/components/instruction-planning-panel";
 
@@ -108,6 +103,52 @@ export function AssistantWorkspace({
   const progressValue = Math.round(
     (state.completedSteps / Math.max(state.totalSteps, 1)) * 100,
   );
+  const [sessionList, setSessionList] = useState(sessions);
+  const [selectedSession, setSelectedSession] = useState(
+    sessions.find((s) => s.active)?.name ?? sessions[0].name,
+  );
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
+  const [captureError, setCaptureError] = useState("");
+
+  const handleCaptureScreen = async () => {
+    setCapturing(true);
+    setCaptureError("");
+    try {
+      const data = await apiRequest<{ imageData?: string }>(
+        "/api/capture-screen",
+      );
+      if (data.imageData) setCapturedImage(data.imageData);
+      else setCaptureError("No image returned from capture.");
+    } catch (e) {
+      setCaptureError(e instanceof Error ? e.message : "Capture failed");
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  const handleAddSession = async () => {
+    const name = `Session ${sessionList.length + 1}`;
+    try {
+      const data = await apiRequest<{ session: { id: string } }>(
+        "/api/assistant/sessions",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            project: { name: "Workspace", description: "Created from workspace" },
+          }),
+        },
+      );
+      try {
+        localStorage.setItem("assistant_session_id", data.session.id);
+      } catch {}
+    } catch {
+      // API unavailable — keep it local-only.
+    }
+    const entry = { name, detail: "New", active: false };
+    setSessionList((prev) => [...prev, entry]);
+    setSelectedSession(name);
+  };
 
   return (
     <div className="min-h-screen bg-[#0b1020] text-slate-100">
@@ -127,14 +168,6 @@ export function AssistantWorkspace({
                 </p>
               </div>
             </Link>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-slate-400 hover:bg-white/5 hover:text-white lg:hidden"
-              aria-label="Open navigation"
-            >
-              <Menu className="h-5 w-5" />
-            </Button>
           </div>
 
           <div className="hidden px-3 lg:block">
@@ -191,23 +224,28 @@ export function AssistantWorkspace({
               <button
                 className="text-slate-500 transition-colors hover:text-cyan-300"
                 aria-label="Add session"
+                title="Create a new assistant session"
+                onClick={() => void handleAddSession()}
               >
                 <Plus className="h-4 w-4" />
               </button>
             </div>
             <div className="space-y-1">
-              {sessions.map((session) => (
+              {sessionList.map((session) => {
+                const isActive = session.name === selectedSession;
+                return (
                 <button
                   key={session.name}
+                  onClick={() => setSelectedSession(session.name)}
                   className={cn(
                     "flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
-                    session.active ? "bg-white/5" : "hover:bg-white/5",
+                    isActive ? "bg-white/5" : "hover:bg-white/5",
                   )}
                 >
                   <span
                     className={cn(
                       "mt-1.5 h-2 w-2 rounded-full",
-                      session.active ? "bg-cyan-300" : "bg-slate-700",
+                      isActive ? "bg-cyan-300" : "bg-slate-700",
                     )}
                   />
                   <span className="min-w-0">
@@ -219,15 +257,19 @@ export function AssistantWorkspace({
                     </span>
                   </span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
 
           <div className="hidden border-t border-white/10 p-4 lg:block">
-            <button className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-slate-400 hover:bg-white/5 hover:text-white">
-              <Settings2 className="h-4 w-4" />
-              <span className="text-sm">Workspace settings</span>
-            </button>
+            <Link
+              to="/"
+              className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-slate-400 hover:bg-white/5 hover:text-white"
+            >
+              <Zap className="h-4 w-4" />
+              <span className="text-sm">Open automation dashboard</span>
+            </Link>
           </div>
         </aside>
 
@@ -252,14 +294,6 @@ export function AssistantWorkspace({
               <Badge className="hidden border-emerald-400/20 bg-emerald-400/10 text-emerald-300 sm:inline-flex">
                 <Activity className="mr-1 h-3 w-3" /> Ready
               </Badge>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="text-slate-400 hover:bg-white/5 hover:text-white"
-                aria-label="Help"
-              >
-                <CircleHelp className="h-4 w-4" />
-              </Button>
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-cyan-300 text-xs font-bold text-slate-950">
                 DS
               </div>
@@ -287,8 +321,13 @@ export function AssistantWorkspace({
                         : "A structured placeholder for the next layer of your OCR assistant workflow."}
                     </p>
                   </div>
-                  <Button className="bg-cyan-400 text-slate-950 hover:bg-cyan-300">
-                    <Camera className="h-4 w-4" /> Capture screen
+                  <Button
+                    className="bg-cyan-400 text-slate-950 hover:bg-cyan-300"
+                    onClick={() => void handleCaptureScreen()}
+                    disabled={capturing}
+                  >
+                    <Camera className="h-4 w-4" />
+                    {capturing ? "Capturing…" : "Capture screen"}
                   </Button>
                 </div>
 
@@ -302,22 +341,18 @@ export function AssistantWorkspace({
                         ? "Capture library"
                         : "Active canvas"}
                     </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        className="rounded-md p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-200"
-                        aria-label="Upload capture"
-                      >
-                        <Upload className="h-4 w-4" />
-                      </button>
-                      <button
-                        className="rounded-md p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-200"
-                        aria-label="More options"
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </button>
-                    </div>
                   </div>
+                  {captureError && (
+                    <p className="px-4 pt-2 text-xs text-red-400">{captureError}</p>
+                  )}
                   <div className="flex min-h-[330px] items-center justify-center bg-[radial-gradient(circle_at_center,_rgba(34,211,238,0.1),_transparent_45%)] p-6 sm:min-h-[430px]">
+                    {capturedImage ? (
+                      <img
+                        src={capturedImage}
+                        alt="Captured screen"
+                        className="max-h-[430px] rounded-xl border border-white/10 object-contain"
+                      />
+                    ) : (
                     <div className="w-full max-w-2xl rounded-xl border border-dashed border-cyan-300/30 bg-[#0d1528]/80 p-8 text-center">
                       <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-300">
                         {activeView === "captures" ? (
@@ -332,17 +367,11 @@ export function AssistantWorkspace({
                           : `${navigation.find((item) => getViewFromPath(item.path))?.label} are ready to connect`}
                       </h3>
                       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
-                        This calm, focused canvas is reserved for real capture
-                        data, OCR regions, and assistant output once the state
-                        layer is connected.
+                        Press “Capture screen” above to grab the real desktop
+                        frame via the backend.
                       </p>
-                      <Button
-                        variant="outline"
-                        className="mt-6 border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white"
-                      >
-                        <Plus className="h-4 w-4" /> Add a placeholder capture
-                      </Button>
                     </div>
+                    )}
                   </div>
                 </div>
 
@@ -380,12 +409,6 @@ export function AssistantWorkspace({
                       Instruction & context
                     </h2>
                   </div>
-                  <button
-                    className="text-slate-500 hover:text-slate-200"
-                    aria-label="Close context panel"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
                 </div>
                 <div className="mt-5 rounded-xl border border-cyan-300/20 bg-cyan-300/5 p-4">
                   <div className="flex items-start gap-3">
@@ -409,16 +432,13 @@ export function AssistantWorkspace({
                       <p className="text-xs font-medium text-slate-300">
                         Context sources
                       </p>
-                      <button className="text-xs text-cyan-300 hover:text-cyan-200">
-                        Manage
-                      </button>
                     </div>
                     <div className="space-y-2">
                       {[
                         {
                           label: "Current screen",
                           detail: "Live preview",
-                          icon: MonitorIcon,
+                          icon: Monitor,
                         },
                         {
                           label: "Session notes",
@@ -471,8 +491,11 @@ export function AssistantWorkspace({
                 <Button
                   variant="outline"
                   className="mt-6 w-full border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/10 hover:text-white"
+                  asChild
                 >
-                  <Play className="h-4 w-4" /> Prepare assistant run
+                  <Link to="/">
+                    <Play className="h-4 w-4" /> Prepare assistant run
+                  </Link>
                 </Button>
               </div>
             </aside>
@@ -544,6 +567,4 @@ export function AssistantWorkspace({
   );
 }
 
-function MonitorIcon(props: ComponentProps<typeof FileImage>) {
-  return <FileImage {...props} />;
-}
+

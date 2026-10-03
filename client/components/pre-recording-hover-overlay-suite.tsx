@@ -22,6 +22,7 @@ import {
   Brush,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useFrameMapper } from "@/lib/frame-canvas";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -72,6 +73,7 @@ export const PreRecordingHoverOverlaySuite: React.FC<
   const [isPreRecordingActive, setIsPreRecordingActive] =
     useState<boolean>(true);
   const [isDrawingRoute, setIsDrawingRoute] = useState<boolean>(false);
+  const { frame: draftFrame, onMediaLoad, toFrame } = useFrameMapper();
   const [draggedPointId, setDraggedPointId] = useState<string | null>(null);
 
   // Initial Pre-Recorded Points
@@ -132,9 +134,7 @@ export const PreRecordingHoverOverlaySuite: React.FC<
   // Handle Mouse Down (Start Drawing Route or Select)
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isPreRecordingActive) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
+    const { x, y } = toFrame(e);
 
     if (activeTool === "route") {
       setIsDrawingRoute(true);
@@ -146,9 +146,7 @@ export const PreRecordingHoverOverlaySuite: React.FC<
   // Handle Mouse Move (Continuous Route Drawing / Dragging Point)
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isPreRecordingActive) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
+    const { x, y } = toFrame(e);
 
     if (isDrawingRoute && activeTool === "route") {
       setDrawnRoute((prev) => [...prev, { x, y }]);
@@ -173,9 +171,7 @@ export const PreRecordingHoverOverlaySuite: React.FC<
   // Handle Single Click (Place Point or Avoidance Zone)
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isPreRecordingActive || activeTool === "route") return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
+    const { x, y } = toFrame(e);
 
     if (activeTool === "avoidance") {
       const newZone: AvoidanceZone = {
@@ -258,7 +254,7 @@ export const PreRecordingHoverOverlaySuite: React.FC<
   const generateRouteSVG = () => {
     if (drawnRoute.length === 0) return "";
     return drawnRoute
-      .map((p) => `${(p.x / 1920) * 1000},${(p.y / 1080) * 562.5}`)
+      .map((p) => `${(p.x / draftFrame.width) * 100},${(p.y / draftFrame.height) * 100}`)
       .join(" ");
   };
 
@@ -353,13 +349,15 @@ export const PreRecordingHoverOverlaySuite: React.FC<
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onClick={handleCanvasClick}
-            className="relative w-full aspect-video bg-slate-950 rounded-xl border border-cyan-800/80 overflow-hidden cursor-crosshair group shadow-2xl select-none"
+            style={{ aspectRatio: `${draftFrame.width} / ${draftFrame.height}` }}
+            className="relative w-full bg-slate-950 rounded-xl border border-cyan-800/80 overflow-hidden cursor-crosshair group shadow-2xl select-none"
           >
             {currentLiveScreenshot ? (
               <img
                 src={currentLiveScreenshot}
                 alt="Live Drawing Viewport"
-                className="w-full h-full object-cover opacity-80 pointer-events-none"
+                onLoad={onMediaLoad}
+                className="w-full h-full object-contain opacity-80 pointer-events-none"
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-slate-400 text-xs pointer-events-none">
@@ -373,7 +371,8 @@ export const PreRecordingHoverOverlaySuite: React.FC<
             {/* Glowing Drawn Route Overlay */}
             <svg
               className="absolute inset-0 w-full h-full pointer-events-none"
-              viewBox="0 0 1000 562.5"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
             >
               <defs>
                 <linearGradient
@@ -406,10 +405,10 @@ export const PreRecordingHoverOverlaySuite: React.FC<
               <div
                 key={az.id}
                 style={{
-                  left: `${(az.x / 1920) * 100}%`,
-                  top: `${(az.y / 1080) * 100}%`,
-                  width: `${(az.width / 1920) * 100}%`,
-                  height: `${(az.height / 1080) * 100}%`,
+                  left: `${(az.x / draftFrame.width) * 100}%`,
+                  top: `${(az.y / draftFrame.height) * 100}%`,
+                  width: `${(az.width / draftFrame.width) * 100}%`,
+                  height: `${(az.height / draftFrame.height) * 100}%`,
                 }}
                 className="absolute border-2 border-dashed border-red-500 bg-red-950/40 rounded-lg pointer-events-none flex flex-col justify-between p-1 z-10 animate-pulse"
               >
@@ -437,8 +436,8 @@ export const PreRecordingHoverOverlaySuite: React.FC<
                 <div
                   key={pt.id}
                   style={{
-                    left: `${(pt.x / 1920) * 100}%`,
-                    top: `${(pt.y / 1080) * 100}%`,
+                    left: `${(pt.x / draftFrame.width) * 100}%`,
+                    top: `${(pt.y / draftFrame.height) * 100}%`,
                   }}
                   onMouseDown={(e) => {
                     e.stopPropagation();

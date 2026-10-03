@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Activity,
   Monitor,
@@ -40,6 +40,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { apiUrl } from "@/lib/api";
+import {
+  ExecutionModeBar,
+  type ExecutionModeId,
+} from "@/components/execution-mode-bar";
 import {
   framePointAsPercent,
   framePointFromClient,
@@ -129,6 +134,13 @@ interface LiveScreenHUDProps {
   sequence: SequenceStep[];
   activeStepId: string | null;
   isRecordMode: boolean;
+  /** "desktop" -> pyautogui, "android" -> ADB. Defaults to "desktop". */
+  targetDevice?: "desktop" | "android";
+  deviceId?: string | null;
+  /** Called when the user runs the full sequence (parent owns device-aware execution). */
+  onRunSequence?: () => Promise<void>;
+  /** Reports the measured frame pixel size so parents can rescale coordinates. */
+  onFrameSizeChange?: (size: { width: number; height: number }) => void;
   onAddStep: (
     stepData: Partial<SequenceStep> & { x: number; y: number },
   ) => void;
@@ -139,6 +151,20 @@ interface LiveScreenHUDProps {
     snapshotUrl: string | null,
     displaySurface: string | null,
   ) => void;
+  /** Stop the parent-owned sequence run (fixes STOP not reaching the parent). */
+  onStopSequence?: () => void;
+  /** AI DECIDE mode: parent runs the perceive -> plan -> watch/interact loop. */
+  onAiDecideMode?: (active: boolean) => void;
+  /** LEARNING AUTO-ACT mode: parent plans from learned methods and executes. */
+  onLearningAutoAct?: () => void;
+  /**
+   * RUN with AI-derived steps: when the sequence is empty, the parent
+   * perceives the live screen and asks the planner to synthesize steps from
+   * the screenshot, then runs them for real. Returns true if it handled the run.
+   */
+  onSynthesizeAndRun?: () => Promise<boolean>;
+  /** High-level objective forwarded to AI-driven modes. */
+  userObjective?: string;
 }
 
 export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
@@ -153,10 +179,19 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   sequence,
   activeStepId,
   isRecordMode,
+  targetDevice = "desktop",
+  deviceId = null,
+  onRunSequence,
+  onFrameSizeChange,
   onAddStep,
   onRepositionStep,
   onSelectStep,
   onLiveStreamChange,
+  onStopSequence,
+  onAiDecideMode,
+  onLearningAutoAct,
+  onSynthesizeAndRun,
+  userObjective,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -165,20 +200,32 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
     null,
   );
   const [draggingStepId, setDraggingStepId] = useState<string | null>(null);
-  const [trackDwellTime, setTrackDwellTime] = useState<boolean>(true);
-  const [dwellStartTime, setDwellStartTime] = useState<number>(Date.now());
-  const [currentDwellMs, setCurrentDwellMs] = useState<number>(0);
   const [clickRipples, setClickRipples] = useState<
     { id: string; x: number; y: number; time: number }[]
   >([]);
 
+  // Measured frame pixel size — single source of truth for ALL coordinate
+  // mapping in this HUD. Defaults to 1920x1080 until the real media loads,
+  // then updates from the image/video natural dimensions (phone screenshots,
+  // ultrawide monitors, etc.).
+  const [frameSize, setFrameSize] = useState({ width: 1920, height: 1080 });
+  const reportFrameSize = (width: number, height: number) => {
+    if (
+      Number.isFinite(width) &&
+      Number.isFinite(height) &&
+      width > 0 &&
+      height > 0
+    ) {
+      setFrameSize((prev) => {
+        if (prev.width === width && prev.height === height) return prev;
+        onFrameSizeChange?.({ width, height });
+        return { width, height };
+      });
+    }
+  };
+
   // Realistic Cursor & Spline Replay State
-  const [cursorStyle, setCursorStyle] = useState<
-    "pointer" | "hand" | "hologram"
-  >("pointer");
   const [humanDriftPx, setHumanDriftPx] = useState<number>(6);
-  const [flowrateSpeed, setFlowrateSpeed] = useState<number>(750);
-  const [overshootPx, setOvershootPx] = useState<number>(10);
   const [recordedTrajectory, setRecordedTrajectory] = useState<
     Array<{ x: number; y: number; time: number }>
   >([]);
@@ -228,7 +275,7 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
       reader.onload = (event) => {
         const base64 = event.target?.result as string;
         if (base64) {
-          fetch("/api/sync-real-frame", {
+          fetch(apiUrl("/api/sync-real-frame"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ imageData: base64 }),
@@ -249,7 +296,7 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
           reader.onload = (event) => {
             const base64 = event.target?.result as string;
             if (base64) {
-              fetch("/api/sync-real-frame", {
+              fetch(apiUrl("/api/sync-real-frame"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ imageData: base64 }),
@@ -342,7 +389,7 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
             const ctx = canvas.getContext("2d");
             ctx?.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
             const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-            fetch("/api/sync-real-frame", {
+            fetch(apiUrl("/api/sync-real-frame"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ imageData: dataUrl }),
@@ -425,32 +472,34 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   >("auto_fixup");
   const [fixupExplanation, setFixupExplanation] = useState<string>("");
 
-  const NATIVE_WIDTH = 1920;
-  const NATIVE_HEIGHT = 1080;
+  // Frame dimensions come from the measured media (see reportFrameSize),
+  // NOT a hardcoded constant — this is what makes non-16:9 sources work.
+  const FRAME_W = frameSize.width;
+  const FRAME_H = frameSize.height;
 
   const getNativeCoordinates = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0, pctX: 50, pctY: 50 };
     const viewport = getContainedFrameViewport(rect, {
-      width: NATIVE_WIDTH,
-      height: NATIVE_HEIGHT,
+      width: FRAME_W,
+      height: FRAME_H,
     });
     const point = framePointFromClient(e.clientX, e.clientY, viewport, {
-      width: NATIVE_WIDTH,
-      height: NATIVE_HEIGHT,
+      width: FRAME_W,
+      height: FRAME_H,
     });
 
     return {
       ...point,
-      pctX: (point.x / NATIVE_WIDTH) * 100,
-      pctY: (point.y / NATIVE_HEIGHT) * 100,
+      pctX: (point.x / FRAME_W) * 100,
+      pctY: (point.y / FRAME_H) * 100,
     };
   };
 
   const toPercent = (nativeX: number, nativeY: number) => {
     return {
-      left: `${(nativeX / NATIVE_WIDTH) * 100}%`,
-      top: `${(nativeY / NATIVE_HEIGHT) * 100}%`,
+      left: `${(nativeX / FRAME_W) * 100}%`,
+      top: `${(nativeY / FRAME_H) * 100}%`,
     };
   };
 
@@ -461,16 +510,16 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
     height: number;
   }) => {
     return {
-      left: `${(box.x / NATIVE_WIDTH) * 100}%`,
-      top: `${(box.y / NATIVE_HEIGHT) * 100}%`,
-      width: `${Math.max(2, (box.width / NATIVE_WIDTH) * 100)}%`,
-      height: `${Math.max(2, (box.height / NATIVE_HEIGHT) * 100)}%`,
+      left: `${(box.x / FRAME_W) * 100}%`,
+      top: `${(box.y / FRAME_H) * 100}%`,
+      width: `${Math.max(2, (box.width / FRAME_W) * 100)}%`,
+      height: `${Math.max(2, (box.height / FRAME_H) * 100)}%`,
     };
   };
 
   // Record continuous trajectory as user moves
   const recordMovementPoint = (x: number, y: number) => {
-    if (isRecordMode) {
+    if (isRecordMode || localRecording) {
       setRecordedTrajectory((prev) => [
         ...prev.slice(-60),
         { x, y, time: Date.now() },
@@ -478,156 +527,177 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
     }
   };
 
-  // Replay user mouse movement with human-like drift differential
-  // Physically execute entire sequence or active step on real user desktop via PyAutoGUI
-  const handleExecuteAllOnActualPC = async () => {
-    const stepsToRun =
-      sequence.length > 0
-        ? sequence
-        : recordedTrajectory.length > 0
-          ? recordedTrajectory.map((t, idx) => ({
-              id: `t_${idx}`,
-              name: `Step #${idx + 1}`,
-              action: "click" as const,
-              x: t.x,
-              y: t.y,
-              dwellDurationMs: 300,
-            }))
-          : [
-              {
-                id: "def_1",
-                name: "Center Focus Click",
-                action: "click" as const,
-                x: 960,
-                y: 540,
-                dwellDurationMs: 300,
-              },
-            ];
+  /**
+   * POST a task with an abort signal + timeout. This is the escape hatch:
+   * if the device/server hangs, the caller (or the Esc key) can always break
+   * out instead of wedging the UI forever.
+   */
+  const postTaskAbortable = async (
+    task: Record<string, any>,
+    timeoutMs = 30000,
+  ): Promise<any> => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(apiUrl("/api/execute-task"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          targetDevice,
+          deviceId,
+          frameSize: { width: FRAME_W, height: FRAME_H },
+          task,
+        }),
+      });
+      return await res.json().catch(() => ({ success: false }));
+    } finally {
+      clearTimeout(timer);
+      if (abortRef.current === ctrl) abortRef.current = null;
+    }
+  };
 
-    alert(
-      `⚡ Executing ${stepsToRun.length} action(s) directly on your REAL PC via PyAutoGUI! Stand by...`,
-    );
+  /** Stop every mode: invalidate loop tokens, abort in-flight requests. */
+  const stopAllModes = () => {
+    modeTokenRef.current++;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (activeMode === "ai-decide") onAiDecideMode?.(false);
+    if (localRecording) setLocalRecording(false);
+    onStopSequence?.();
+    setActiveMode(null);
+    setModeBusyLabel(null);
+    setIsRunningSequence(false);
+    setIsReplayingMovement(false);
+    setReplayingCursorPos(null);
+    // Don't leave the historical motion trail painted over the HUD.
+    setSplineMotionTrail([]);
+    setRunStatus("Stopped (Esc).");
+  };
 
-    for (let i = 0; i < stepsToRun.length; i++) {
-      const step: any = stepsToRun[i];
-      try {
-        await fetch("/api/execute-task", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            targetDevice: "desktop",
-            task: {
+  // Run the saved sequence on the selected device (desktop -> pyautogui,
+  // android -> ADB). Delegates to the parent when it provides onRunSequence
+  // so step status, stop-tokens and drift settings stay in one place.
+  const runTokenRef = useRef(0);
+  const [isRunningSequence, setIsRunningSequence] = useState(false);
+  const [runStatus, setRunStatus] = useState<string | null>(null);
+
+  // --- Execution modes (each button does something DIFFERENT) -----------------
+  const [activeMode, setActiveMode] = useState<ExecutionModeId | null>(null);
+  const [modeBusyLabel, setModeBusyLabel] = useState<string | null>(null);
+  const modeTokenRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const followerLastSentRef = useRef(0);
+  /** Local trajectory capture for RECORD-RUN mode (independent of record UI). */
+  const [localRecording, setLocalRecording] = useState(false);
+
+  // Esc is the universal escape hatch for any running mode.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && (activeMode || isRunningSequence)) {
+        e.preventDefault();
+        stopAllModes();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMode, isRunningSequence]);
+
+  const handleRunSequenceOnDevice = async () => {
+    if (onRunSequence) {
+      // Awaited so the mode stays visibly active until the parent finishes.
+      await onRunSequence().catch((e) =>
+        setRunStatus(`Run failed: ${String(e).slice(0, 60)}`),
+      );
+      return;
+    }
+    if (sequence.length === 0) {
+      setRunStatus("No sequence steps to run — record steps first.");
+      return;
+    }
+    const token = ++runTokenRef.current;
+    setIsRunningSequence(true);
+    setRunStatus(`Running ${sequence.length} steps on ${targetDevice}...`);
+    try {
+      for (let i = 0; i < sequence.length; i++) {
+        if (runTokenRef.current !== token) {
+          setRunStatus("Run stopped.");
+          break;
+        }
+        const step = sequence[i];
+        try {
+          const data = await postTaskAbortable(
+            {
               id: step.id,
               name: step.name || `Step #${i + 1}`,
               action: step.action || "click",
               targetPosition: { x: step.x, y: step.y },
-              textPayload: step.textPayload || step.text || "",
+              textPayload: step.text || "",
               keyPayload: step.keyPayload || "enter",
+              delayMs: step.delayMs,
             },
-          }),
-        });
-      } catch (err) {
-        console.error("Step execution error:", err);
+            30000,
+          );
+          if (!data.success) {
+            setRunStatus(`Step ${i + 1} failed: ${data.error || "unknown"}`);
+            break;
+          }
+        } catch (err: any) {
+          if (err?.name === "AbortError") {
+            setRunStatus("Run aborted (Esc).");
+          } else {
+            setRunStatus(`Step ${i + 1} error: ${String(err).slice(0, 60)}`);
+          }
+          break;
+        }
+        await new Promise((r) => setTimeout(r, step.delayMs || 450));
       }
-      // Pause between steps
-      await new Promise((r) => setTimeout(r, step.dwellDurationMs || 450));
+      if (runTokenRef.current === token)
+        setRunStatus(`Done: ${sequence.length} steps on ${targetDevice}.`);
+    } finally {
+      if (runTokenRef.current === token) setIsRunningSequence(false);
     }
   };
 
-  const handleReplayUserMovementWithDrift = () => {
-    if (sequence.length === 0 && recordedTrajectory.length === 0) {
-      alert("Please record or create at least one step/path to replay.");
-      return;
-    }
-
-    setIsReplayingMovement(true);
-    setSplineMotionTrail([]);
-
-    // Determine waypoints: sequence steps or recorded trajectory
-    const waypoints =
-      sequence.length > 0
-        ? sequence.map((s) => ({
-            x: s.x,
-            y: s.y,
-            dwell: s.dwellDurationMs || 400,
-          }))
-        : recordedTrajectory.map((t) => ({ x: t.x, y: t.y, dwell: 200 }));
-
-    let currentWaypointIdx = 0;
-    let startX = waypoints[0]?.x || 960;
-    let startY = waypoints[0]?.y || 540;
-
-    const animateToNextWaypoint = () => {
-      if (currentWaypointIdx >= waypoints.length) {
-        setIsReplayingMovement(false);
-        setReplayingCursorPos(null);
-        return;
-      }
-
-      const target = waypoints[currentWaypointIdx];
-      const targetX = target.x;
-      const targetY = target.y;
-
-      const totalSteps = 25;
-      let step = 0;
-
-      // Dispatch physical OS mouse move & click via PyAutoGUI
-      fetch("/api/execute-task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          task: {
-            id: `replay_step_${currentWaypointIdx}`,
-            name: `Replay Waypoint #${currentWaypointIdx + 1}`,
-            action: "click",
-            targetPosition: { x: targetX, y: targetY },
-            textPayload: "",
-          },
-        }),
-      }).catch(() => {});
-
-      const interval = setInterval(() => {
-        step++;
-        const t = step / totalSteps;
-        const easeT = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        const driftX = (Math.random() - 0.5) * humanDriftPx * 2;
-        const driftY = (Math.random() - 0.5) * humanDriftPx * 2;
-
-        const curX = Math.round(startX + (targetX - startX) * easeT + driftX);
-        const curY = Math.round(startY + (targetY - startY) * easeT + driftY);
-
-        setReplayingCursorPos({ x: curX, y: curY });
-        setSplineMotionTrail((prev) => [
-          ...prev.slice(-20),
-          { x: curX, y: curY },
-        ]);
-
-        if (step >= totalSteps) {
-          clearInterval(interval);
-          startX = targetX;
-          startY = targetY;
-          currentWaypointIdx++;
-          setTimeout(animateToNextWaypoint, target.dwell || 300);
-        }
-      }, 25);
-    };
-
-    animateToNextWaypoint();
+  const handleStopSequence = () => {
+    runTokenRef.current++;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    onStopSequence?.();
+    setIsRunningSequence(false);
+    setRunStatus("Run stopped.");
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const coords = getNativeCoordinates(e);
     setMousePos({ x: coords.x, y: coords.y });
     recordMovementPoint(coords.x, coords.y);
-    // Reset dwell start if moved significantly (>20px)
-    if (
-      !mousePos ||
-      Math.hypot(coords.x - mousePos.x, coords.y - mousePos.y) > 20
-    ) {
-      setDwellStartTime(Date.now());
-      setCurrentDwellMs(0);
-    } else {
-      setCurrentDwellMs(Date.now() - dwellStartTime);
+
+    // FOLLOWER mode: mirror the user's cursor onto the real device.
+    // Desktop forwards hover moves; Android has no hover so it mirrors taps.
+    if (activeMode === "follower" && targetDevice === "desktop") {
+      const now = Date.now();
+      if (now - followerLastSentRef.current > 120) {
+        followerLastSentRef.current = now;
+        fetch(apiUrl("/api/execute-task"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            targetDevice,
+            deviceId,
+            frameSize: { width: FRAME_W, height: FRAME_H },
+            task: {
+              id: `follow_${now}`,
+              name: "Follower mirror",
+              action: "mouse_move",
+              targetPosition: { x: Math.round(coords.x), y: Math.round(coords.y) },
+            },
+          }),
+        }).catch(() => {});
+      }
     }
 
     if (draggingStepId) {
@@ -638,27 +708,296 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   const handleMouseUp = () => {
     setDraggingStepId(null);
   };
+  // --- Execution modes ------------------------------------------------------
 
-  // Integrate drafted overlay points into the main workflow sequence
+  /**
+   * STEP-RUN: executes the set steps directly, back-to-back, with no
+   * mouse-path navigation or animation in between. Fast headless dispatch.
+   */
+  const handleStepRun = async () => {
+    const token = ++modeTokenRef.current;
+    if (sequence.length === 0) {
+      setModeBusyLabel("no steps to run");
+      return;
+    }
+    for (let i = 0; i < sequence.length; i++) {
+      if (modeTokenRef.current !== token) break;
+      const st = sequence[i];
+      setModeBusyLabel(`step ${i + 1}/${sequence.length}: ${st.name || st.action}`);
+      try {
+        await postTaskAbortable(
+          {
+            id: st.id,
+            name: st.name || `Step #${i + 1}`,
+            action: st.action || "click",
+            targetPosition: { x: st.x, y: st.y },
+            textPayload: st.text || "",
+            keyPayload: st.keyPayload || "enter",
+            delayMs: 120,
+          },
+          20000,
+        );
+      } catch {
+        break; // aborted or failed — stop the run
+      }
+    }
+    if (modeTokenRef.current === token)
+      setModeBusyLabel(`step-run done: ${sequence.length} steps, no mouse nav`);
+  };
+
+  /**
+   * DRIFT SIMULATE: pure simulation. The ghost cursor walks the path with
+   * human-like drift and every waypoint is logged as SIMULATED. No API calls
+   * are made — nothing real moves or clicks.
+   */
+  const handleDriftSimulate = async () => {
+    const token = ++modeTokenRef.current;
+    const waypoints =
+      sequence.length > 0
+        ? sequence.map((st) => ({
+            x: st.x,
+            y: st.y,
+            action: st.action || "click",
+            label: st.name || `Step`,
+          }))
+        : recordedTrajectory.map((t) => ({
+            x: t.x,
+            y: t.y,
+            action: "move",
+            label: "path",
+          }));
+    if (waypoints.length === 0) {
+      setModeBusyLabel("nothing to simulate — record steps first");
+      return;
+    }
+    setIsReplayingMovement(true);
+    setSplineMotionTrail([]);
+    let curX = waypoints[0].x;
+    let curY = waypoints[0].y;
+    for (let i = 0; i < waypoints.length; i++) {
+      if (modeTokenRef.current !== token) break;
+      const w = waypoints[i];
+      setModeBusyLabel(
+        `SIMULATED ${w.action} at (${Math.round(w.x)}, ${Math.round(w.y)}) — no real action sent`,
+      );
+      const steps = 18;
+      for (let k = 1; k <= steps; k++) {
+        if (modeTokenRef.current !== token) break;
+        const t = k / steps;
+        const dx = (Math.random() - 0.5) * humanDriftPx * 2;
+        const dy = (Math.random() - 0.5) * humanDriftPx * 2;
+        curX = curX + (w.x - curX) * t + dx * 0.3;
+        curY = curY + (w.y - curY) * t + dy * 0.3;
+        setReplayingCursorPos({ x: Math.round(curX), y: Math.round(curY) });
+        setSplineMotionTrail((prev) => [
+          ...prev.slice(-24),
+          { x: Math.round(curX), y: Math.round(curY) },
+        ]);
+        await new Promise((r) => setTimeout(r, 28));
+      }
+      setClickRipples((prev) => [
+        ...prev.slice(-8),
+        { id: `sim_${Date.now()}_${i}`, x: w.x, y: w.y, time: Date.now() },
+      ]);
+      await new Promise((r) => setTimeout(r, 350));
+    }
+    setIsReplayingMovement(false);
+    setReplayingCursorPos(null);
+    if (modeTokenRef.current === token) {
+      setModeBusyLabel("simulation complete — nothing real was touched");
+      // Fade the trail so it doesn't linger over the HUD.
+      setTimeout(() => {
+        if (modeTokenRef.current === token) setSplineMotionTrail([]);
+      }, 4000);
+    }
+  };
+
+  /** Mode dispatcher — every button does something DIFFERENT. */
+  const handleSelectMode = async (mode: ExecutionModeId) => {
+    if (activeMode) return;
+    switch (mode) {
+      case "run-real":
+        // REAL: delegates to the parent (device-aware execution) or runs locally.
+        // Empty sequence? The AI derives steps from the live screenshot instead
+        // of failing — genuine screenshot interpretation, not a canned message.
+        setActiveMode(mode);
+        if (sequence.length === 0 && onSynthesizeAndRun) {
+          setModeBusyLabel("AI interpreting screenshot to derive steps…");
+          // Belt and suspenders: the parent has its own timeouts/abort, but
+          // the mode must never wedge forever awaiting it.
+          const handled = await Promise.race([
+            onSynthesizeAndRun().catch(() => false),
+            new Promise<boolean>((r) =>
+              setTimeout(() => r(false), 120000),
+            ),
+          ]);
+          if (!handled) {
+            setModeBusyLabel("no steps to run — record steps first");
+          }
+        } else {
+          setModeBusyLabel(`running ${sequence.length} steps for real…`);
+          await handleRunSequenceOnDevice();
+        }
+        setActiveMode(null);
+        break;
+      case "step-run":
+        setActiveMode(mode);
+        await handleStepRun();
+        setActiveMode(null);
+        break;
+      case "drift-sim":
+        setActiveMode(mode);
+        await handleDriftSimulate();
+        setActiveMode(null);
+        break;
+      case "ai-decide":
+        // Parent owns the perceive -> plan -> watch/interact loop.
+        setActiveMode(mode);
+        setModeBusyLabel("AI perceiving live screen…");
+        onAiDecideMode?.(true);
+        break;
+      case "follower":
+        setActiveMode(mode);
+        setModeBusyLabel(
+          targetDevice === "desktop"
+            ? "mirroring your mouse + clicks live"
+            : "mirroring your taps live (no hover on Android)",
+        );
+        break;
+      case "learning":
+        setActiveMode(mode);
+        setModeBusyLabel("learning mode starting…");
+        onLearningAutoAct?.();
+        // Parent drives it; HUD stays active until stopped.
+        break;
+      case "record-run":
+        // Arm recording; STOP converts the capture to steps and runs it for real.
+        if (targetDevice === "android") {
+          setModeBusyLabel(
+            "record-run needs a hover cursor — not available on Android",
+          );
+          break;
+        }
+        setRecordedTrajectory([]);
+        setLocalRecording(true);
+        setActiveMode(mode);
+        setModeBusyLabel("recording your movements — STOP executes them");
+        break;
+    }
+  };
+
+  /**
+   * Mode-aware stop. RECORD-RUN is special: stopping converts the capture
+   * into steps and executes them for real on the device.
+   */
+  const handleStopMode = async () => {
+    const mode = activeMode;
+    if (mode === "record-run") {
+      const token = ++modeTokenRef.current;
+      setLocalRecording(false);
+      const pts = [...recordedTrajectory];
+      setActiveMode(null);
+      if (pts.length < 5) {
+        setModeBusyLabel("capture too short — nothing to run");
+        return;
+      }
+      // Faithful replay: the capture is a MOVEMENT trajectory, so stream it
+      // as a real mouse route (one device call) instead of inventing a click
+      // at every waypoint — the old code clicked where the user only moved.
+      const stride = Math.max(1, Math.floor(pts.length / 60));
+      const sampled = pts
+        .filter((_, i) => i % stride === 0)
+        .map((w) => ({ x: Math.round(w.x), y: Math.round(w.y) }));
+      setModeBusyLabel(
+        `replaying ${sampled.length} captured waypoints as a mouse route…`,
+      );
+      try {
+        const data = await postTaskAbortable(
+          {
+            id: `recrun_${Date.now()}`,
+            name: `Captured mouse route (${sampled.length} waypoints)`,
+            action: "stream_mouse_route",
+            routePoints: sampled,
+            speedMultiplier: 1,
+            driftPx: 4,
+            isDrag: false,
+            delayMs: 250,
+          },
+          60000,
+        );
+        if (modeTokenRef.current !== token) return;
+        setModeBusyLabel(
+          data?.success
+            ? "record-run complete — route replayed"
+            : `record-run failed: ${String(data?.error || "unknown").slice(0, 60)}`,
+        );
+      } catch {
+        if (modeTokenRef.current === token)
+          setModeBusyLabel("record-run aborted");
+      }
+      return;
+    }
+    stopAllModes();
+  };
+
+
+  // Convert the drawn freehand route into sampled sequence steps
   const handleIntegrateOverlayToSequence = () => {
-    if (draftedOverlayPoints.length === 0) return;
-    draftedOverlayPoints.forEach((pt) => {
+    const pts =
+      freehandRoutePoints.length > 0 ? freehandRoutePoints : draftedOverlayPoints;
+    if (pts.length === 0) return;
+    // Sample at most ~12 evenly spaced waypoints so the sequence stays usable
+    const maxSteps = 12;
+    const stride = Math.max(1, Math.floor(pts.length / maxSteps));
+    const sampled = pts.filter((_, i) => i % stride === 0);
+    if (
+      sampled[sampled.length - 1] !== pts[pts.length - 1] &&
+      sampled.length < maxSteps
+    ) {
+      sampled.push(pts[pts.length - 1]);
+    }
+    sampled.forEach((pt: any) => {
       onAddStep({
         stepNumber: sequence.length + 1,
-        name: pt.name,
-        action: pt.action,
-        x: pt.x,
-        y: pt.y,
-        delayMs: pt.delayMs || 400,
+        name: `Route Waypoint`,
+        action: "click",
+        x: Math.round(pt.x),
+        y: Math.round(pt.y),
+        delayMs: 400,
         status: "pending",
       });
     });
     setDraftedOverlayPoints([]);
+    setFreehandRoutePoints([]);
     setIsDrawingOverlayOpen(false);
   };
 
   const handleContainerClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (draggingStepId) return;
+    if (activeMode === "follower") {
+      // Follower mirrors the click onto the real device immediately.
+      const coords = getNativeCoordinates(e);
+      setClickRipples((prev) => [
+        ...prev.slice(-8),
+        { id: `fol_${Date.now()}`, x: coords.x, y: coords.y, time: Date.now() },
+      ]);
+      fetch(apiUrl("/api/execute-task"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetDevice,
+          deviceId,
+          frameSize: { width: FRAME_W, height: FRAME_H },
+          task: {
+            id: `follow_click_${Date.now()}`,
+            name: "Follower click",
+            action: "click",
+            targetPosition: { x: Math.round(coords.x), y: Math.round(coords.y) },
+          },
+        }),
+      }).catch(() => {});
+      return;
+    }
     if (isRecordMode) {
       const coords = getNativeCoordinates(e);
       const stepNumber = sequence.length + 1;
@@ -707,8 +1046,8 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
 
   const polylinePoints = sequence
     .map((step) => {
-      const xPct = (step.x / NATIVE_WIDTH) * 100;
-      const yPct = (step.y / NATIVE_HEIGHT) * 100;
+      const xPct = (step.x / FRAME_W) * 100;
+      const yPct = (step.y / FRAME_H) * 100;
       return `${xPct},${yPct}`;
     })
     .join(" ");
@@ -716,7 +1055,8 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`relative w-full aspect-video bg-black rounded-lg overflow-hidden select-none border-2 transition-all duration-300 ${
+      style={{ aspectRatio: `${FRAME_W} / ${FRAME_H}` }}
+      className={`relative w-full bg-black rounded-lg overflow-hidden select-none border-2 transition-all duration-300 ${
         isRecordMode
           ? "border-amber-500 shadow-[0_0_25px_rgba(245,158,11,0.3)] cursor-none"
           : "border-slate-800 shadow-xl cursor-default"
@@ -729,6 +1069,11 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
       }}
       onClick={handleContainerClick}
       onContextMenu={handleContainerContextMenu}
+      onDrop={handleDropScreenshot}
+      onDragOver={(e) => e.preventDefault()}
+      onPaste={handlePasteScreenshot}
+      tabIndex={0}
+      title="Tip: you can also drop or paste a screenshot image here to sync it as the live frame"
     >
       <div ref={viewportRef} className="absolute inset-0">
         {/* Native WebRTC Live Real Screen Video Stream */}
@@ -737,6 +1082,12 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
           autoPlay
           playsInline
           muted
+          onLoadedMetadata={(e) =>
+            reportFrameSize(
+              e.currentTarget.videoWidth,
+              e.currentTarget.videoHeight,
+            )
+          }
           className={`w-full h-full object-contain pointer-events-none absolute inset-0 z-0 ${
             isLiveStreamActive && antiTunnelMode === "live_stream"
               ? "block"
@@ -769,6 +1120,12 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
           <img
             src={screenshotUrl}
             alt="Live Screen Capture"
+            onLoad={(e) =>
+              reportFrameSize(
+                e.currentTarget.naturalWidth,
+                e.currentTarget.naturalHeight,
+              )
+            }
             className="w-full h-full object-contain pointer-events-none absolute inset-0 z-0"
           />
         ) : (
@@ -785,37 +1142,36 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
                 CLICK ANYWHERE TO START LIVE SCREEN STREAM 📺
               </h3>
               <p className="text-xs font-mono text-slate-300 max-w-md mb-4">
-                Direct 60 FPS zero-latency hardware desktop mirror for AI mouse
-                navigation, OCR text scanning, and physical PyAutoGUI
-                automation.
+                Direct 60 FPS zero-latency hardware screen mirror for AI mouse
+                navigation, OCR text scanning, and physical device automation.
               </p>
 
-              <Button
-                size="lg"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleToggleRealScreenStream();
-                }}
-                className="h-10 px-6 text-sm font-mono font-bold bg-gradient-to-r from-cyan-600 via-blue-600 to-cyan-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-xl shadow-cyan-950 border border-cyan-400/40 gap-2 animate-bounce"
-              >
+              <span className="inline-flex items-center h-10 px-6 text-sm font-mono font-bold bg-gradient-to-r from-cyan-600 via-blue-600 to-cyan-600 text-white shadow-xl shadow-cyan-950 border border-cyan-400/40 gap-2 animate-bounce rounded-md">
                 <Play className="w-4 h-4 text-yellow-300 fill-yellow-300" />
-                START REAL DESKTOP STREAM (60 FPS)
-              </Button>
+                START REAL SCREEN STREAM (60 FPS)
+              </span>
             </div>
           )
         )}
       </div>
 
       {/* Prominent High-Visibility Action Toolbar */}
-      <div className="p-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 font-mono text-xs z-30 relative shadow-md">
+      <div className="p-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 font-mono text-xs z-50 relative shadow-md">
         <div className="flex items-center gap-2">
           <span className="p-1 rounded bg-red-600 text-white font-bold animate-pulse">
-            LIVE DESKTOP
+            LIVE
           </span>
           <span className="text-slate-200 font-bold">
-            Physical OS Execution Bridge:
+            Device Execution Bridge:
           </span>
-          <span className="text-cyan-300">PyAutoGUI Native Drivers Ready</span>
+          <span className="text-cyan-300">
+            {targetDevice === "android" ? "ADB Android" : "PyAutoGUI Desktop"}
+            {" • "}
+            {FRAME_W}×{FRAME_H}
+          </span>
+          {runStatus && (
+            <span className="text-amber-300 text-[11px]">{runStatus}</span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -836,6 +1192,15 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
 
           <Button
             size="sm"
+            onClick={handleTogglePiP}
+            title="Pop the live stream out to a Picture-in-Picture window"
+            className="h-8 text-xs font-mono font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+          >
+            <Maximize2 className="w-3.5 h-3.5 mr-1" /> PiP
+          </Button>
+
+          <Button
+            size="sm"
             onClick={() => setIsDrawingOverlayOpen(!isDrawingOverlayOpen)}
             className={`h-8 text-xs font-mono font-bold ${
               isDrawingOverlayOpen
@@ -847,24 +1212,14 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
             )
           </Button>
 
-          <Button
-            size="sm"
-            onClick={handleExecuteAllOnActualPC}
-            className="h-8 px-4 text-xs font-mono font-bold bg-gradient-to-r from-red-600 via-amber-600 to-red-600 hover:from-red-500 hover:to-amber-500 text-white border border-amber-300 shadow-xl shadow-red-950 gap-1.5 animate-bounce"
-          >
-            <Zap className="w-4 h-4 text-yellow-300" />
-            EXECUTE ON ACTUAL USER PC (PyAutoGUI Native)
-          </Button>
-
-          <Button
-            size="sm"
-            onClick={handleReplayUserMovementWithDrift}
-            disabled={isReplayingMovement}
-            className="h-8 text-xs font-mono font-bold bg-cyan-600 hover:bg-cyan-500 text-white gap-1"
-          >
-            <Play className="w-3.5 h-3.5" /> Replay with Drift (±{humanDriftPx}
-            px)
-          </Button>
+          <ExecutionModeBar
+            activeMode={activeMode}
+            busyLabel={modeBusyLabel}
+            sequenceCount={sequence.length}
+            targetDevice={targetDevice}
+            onSelectMode={handleSelectMode}
+            onStop={handleStopMode}
+          />
         </div>
       </div>
 
@@ -890,23 +1245,17 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
       {/* 1. Realistic Human Mouse Cursor & Glowing Spline Trail Overlay */}
       {/* Motion Spline Trail */}
       {(splineMotionTrail.length > 0 || (mousePos && isRecordMode)) && (
-        <svg className="absolute inset-0 w-full h-full pointer-events-none z-30">
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="absolute inset-0 w-full h-full pointer-events-none z-30"
+        >
           {splineMotionTrail.map((pt, idx) => (
             <circle
               key={idx}
-              cx={
-                framePointAsPercent(pt.x, pt.y, {
-                  width: NATIVE_WIDTH,
-                  height: NATIVE_HEIGHT,
-                }).left
-              }
-              cy={
-                framePointAsPercent(pt.x, pt.y, {
-                  width: NATIVE_WIDTH,
-                  height: NATIVE_HEIGHT,
-                }).top
-              }
-              r={2 + (idx / splineMotionTrail.length) * 3}
+              cx={(pt.x / FRAME_W) * 100}
+              cy={(pt.y / FRAME_H) * 100}
+              r={0.6 + (idx / splineMotionTrail.length) * 0.9}
               fill="#06b6d4"
               opacity={(idx / splineMotionTrail.length) * 0.8}
             />
@@ -921,37 +1270,28 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
             ...framePointAsPercent(
               replayingCursorPos?.x || mousePos?.x || 0,
               replayingCursorPos?.y || mousePos?.y || 0,
-              { width: NATIVE_WIDTH, height: NATIVE_HEIGHT },
+              { width: FRAME_W, height: FRAME_H },
             ),
           }}
           className="absolute -translate-x-1 -translate-y-1 pointer-events-none z-40 flex flex-col items-start transition-transform duration-75"
         >
-          {cursorStyle === "hand" ? (
-            <div className="relative">
-              <span className="text-2xl drop-shadow-[0_0_10px_rgba(6,182,212,0.9)]">
-                👆
-              </span>
-              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
-            </div>
-          ) : (
-            <div className="relative">
-              {/* Realistic Glowing Arrowhead */}
-              <svg
-                className="w-6 h-6 drop-shadow-[0_0_10px_rgba(6,182,212,0.95)]"
-                viewBox="0 0 24 24"
-                fill="none"
-              >
-                <path
-                  d="M3 3L10.07 19.97L12.58 12.58L19.97 10.07L3 3Z"
-                  fill="#06b6d4"
-                  stroke="#ffffff"
-                  strokeWidth="1.5"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-cyan-300 animate-ping" />
-            </div>
-          )}
+          <div className="relative">
+            {/* Realistic Glowing Arrowhead */}
+            <svg
+              className="w-6 h-6 drop-shadow-[0_0_10px_rgba(6,182,212,0.95)]"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <path
+                d="M3 3L10.07 19.97L12.58 12.58L19.97 10.07L3 3Z"
+                fill="#06b6d4"
+                stroke="#ffffff"
+                strokeWidth="1.5"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-cyan-300 animate-ping" />
+          </div>
 
           {/* Coordinate & Drift Tag */}
           <div className="mt-0.5 ml-4 px-2 py-0.5 rounded bg-slate-950/90 border border-cyan-500/60 text-[10px] font-mono text-cyan-300 font-bold shadow-xl flex items-center gap-1 backdrop-blur-md">
@@ -1035,7 +1375,11 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
 
       {/* SVG Connecting Flow Lines for Click Sequence */}
       {sequence.length > 1 && (
-        <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="absolute inset-0 w-full h-full pointer-events-none z-10"
+        >
           <defs>
             <linearGradient id="flowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.8" />
@@ -1187,7 +1531,11 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
 
       {/* Real-Time Motion Particle Ribbon Trail */}
       {splineMotionTrail.length > 1 && (
-        <svg className="absolute inset-0 w-full h-full pointer-events-none z-30">
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="absolute inset-0 w-full h-full pointer-events-none z-30"
+        >
           <defs>
             <linearGradient
               id="spline-ribbon-grad"
@@ -1212,14 +1560,15 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
             points={splineMotionTrail
               .map(
                 (pt) =>
-                  `${(pt.x / NATIVE_WIDTH) * 1000},${(pt.y / NATIVE_HEIGHT) * 562.5}`,
+                  `${(pt.x / FRAME_W) * 100},${(pt.y / FRAME_H) * 100}`,
               )
               .join(" ")}
             fill="none"
             stroke="url(#spline-ribbon-grad)"
-            strokeWidth="5"
+            strokeWidth="1.2"
             strokeLinecap="round"
             strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
             filter="url(#ribbon-glow)"
           />
         </svg>
@@ -1229,8 +1578,8 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
       {replayingCursorPos && (
         <div
           style={{
-            left: `${(replayingCursorPos.x / NATIVE_WIDTH) * 100}%`,
-            top: `${(replayingCursorPos.y / NATIVE_HEIGHT) * 100}%`,
+            left: `${(replayingCursorPos.x / FRAME_W) * 100}%`,
+            top: `${(replayingCursorPos.y / FRAME_H) * 100}%`,
           }}
           className="absolute -translate-x-1 -translate-y-1 pointer-events-none z-50 flex flex-col items-start transition-transform duration-75"
         >
@@ -1341,6 +1690,18 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
             <button
               onClick={(e) => {
                 e.stopPropagation();
+                handleIntegrateOverlayToSequence();
+              }}
+              disabled={freehandRoutePoints.length < 2}
+              title="Convert the drawn route into sequence steps"
+              className="px-2.5 py-1 rounded text-[10px] font-bold uppercase bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-40"
+            >
+              ➕ Route → Steps
+            </button>
+
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
                 setIsDrawingOverlayOpen(false);
               }}
               title="Close Overlay"
@@ -1354,7 +1715,8 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
           {freehandRoutePoints.length > 1 && (
             <svg
               className="absolute inset-0 w-full h-full pointer-events-none z-30"
-              viewBox="0 0 1000 562.5"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
             >
               <defs>
                 <linearGradient
@@ -1373,14 +1735,15 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
                 points={freehandRoutePoints
                   .map(
                     (p) =>
-                      `${(p.x / NATIVE_WIDTH) * 1000},${(p.y / NATIVE_HEIGHT) * 562.5}`,
+                      `${(p.x / FRAME_W) * 100},${(p.y / FRAME_H) * 100}`,
                   )
                   .join(" ")}
                 fill="none"
                 stroke="url(#freehand-spline-grad)"
-                strokeWidth="4"
+                strokeWidth="1.2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
               />
             </svg>
           )}
@@ -1395,7 +1758,7 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
             top: `${Math.min(70, Math.max(30, recordingClickPos.pctY))}%`,
           }}
           onClick={(e) => e.stopPropagation()}
-          className="absolute transform -translate-x-1/2 -translate-y-1/2 bg-slate-950/95 border-2 border-amber-500/80 rounded-xl p-3.5 shadow-2xl backdrop-blur-md z-50 w-72 space-y-2.5 text-xs text-slate-100"
+          className="absolute transform -translate-x-1/2 -translate-y-1/2 bg-slate-950/95 border-2 border-amber-500/80 rounded-xl p-3.5 shadow-2xl backdrop-blur-md z-50 w-72 max-w-[calc(100%-1rem)] space-y-2.5 text-xs text-slate-100"
         >
           <div className="flex items-center justify-between border-b border-slate-800 pb-2">
             <div className="flex items-center gap-1.5 text-amber-400 font-bold font-mono text-xs">

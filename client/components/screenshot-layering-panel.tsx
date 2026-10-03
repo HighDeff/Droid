@@ -27,6 +27,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useFrameMapper } from "@/lib/frame-canvas";
 import {
   Card,
   CardContent,
@@ -39,6 +40,7 @@ import { Slider } from "@/components/ui/slider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { TabContextualSettingsBar } from "./tab-contextual-settings-bar";
+import { apiUrl } from "@/lib/api";
 import {
   framePointAsPercent,
   framePointFromClient,
@@ -141,6 +143,7 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
   ]);
 
   const [activeSlideId, setActiveSlideId] = useState<string>("slide_1");
+  const { frame: layerFrame, onMediaLoad } = useFrameMapper();
   const [isPlayingReplication, setIsPlayingReplication] = useState(false);
   const [activePlaybackStep, setActivePlaybackStep] = useState<number>(0);
   const [executionLog, setExecutionLog] = useState<string>(
@@ -199,7 +202,7 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
           }));
           // If live screenshot exists, trigger background comparison for learning (async)
           if (currentScreenshot && resultUrl) {
-            fetch("/api/compare-screenshots", {
+            fetch(apiUrl("/api/compare-screenshots"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -270,8 +273,8 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
     const point = framePointFromClient(
       e.clientX,
       e.clientY,
-      getContainedFrameViewport(rect, { width: 1920, height: 1080 }),
-      { width: 1920, height: 1080 },
+      getContainedFrameViewport(rect, layerFrame),
+      layerFrame,
     );
     const clickX = point.x;
     const clickY = point.y;
@@ -313,6 +316,50 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
         `[Step ${currentStep + 1}/${slides.length}] Executing ${slide.actionType.toUpperCase()} at (${slide.targetX}, ${slide.targetY}) with ${flowrateSpeed}px/s flowrate...`,
       );
 
+      // OCR_VERIFY is a real vision check, not a device action: capture the
+      // screen, describe it with the vision model, and look for the expected
+      // text. It never dispatches a click.
+      if (slide.actionType === "ocr_verify") {
+        const expected = (slide.ocrExpectedText || "").trim();
+        let ocrDetail = "no expected text configured";
+        let ocrFound = false;
+        try {
+          const capRes = await fetch(apiUrl("/api/capture-screen"));
+          const capData = await capRes.json().catch(() => ({}));
+          if (capData.imageData) {
+            const descRes = await fetch(apiUrl("/api/ai/describe-screen"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ imageData: capData.imageData }),
+            });
+            const descData = await descRes.json().catch(() => ({}));
+            const haystack = JSON.stringify(
+              descData.report || {},
+            ).toLowerCase();
+            ocrFound = expected
+              ? haystack.includes(expected.toLowerCase())
+              : false;
+            ocrDetail = expected
+              ? ocrFound
+                ? `verified "${expected}" on screen`
+                : `expected "${expected}" NOT found on screen`
+              : ocrDetail;
+          } else {
+            ocrDetail = "no screen capture available";
+          }
+        } catch (e) {
+          ocrDetail = `verify error: ${String(e).slice(0, 60)}`;
+        }
+        setExecutionLog(
+          (prev) => prev + ` | OCR ${ocrFound ? "✓" : "✗"} ${ocrDetail}`,
+        );
+        onExecuteLayerSequence?.(slide.id);
+        await new Promise((r) =>
+          setTimeout(r, Math.max(300, 1200 - flowrateSpeed / 4)),
+        );
+        continue;
+      }
+
       // Dispatch to live OS for real pyautogui execution
       try {
         const payload: any = {
@@ -329,7 +376,7 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
         };
         // Handle wait-free: also compare screenshot similarity if enabled
         if (currentScreenshot) {
-          fetch("/api/compare-screenshots", {
+          fetch(apiUrl("/api/compare-screenshots"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -350,7 +397,7 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
             })
             .catch(() => {});
         }
-        await fetch("/api/execute-task", {
+        await fetch(apiUrl("/api/execute-task"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -587,11 +634,13 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
             <CardContent className="p-4">
               <div
                 onClick={handleCanvasImageClick}
-                className="relative w-full aspect-video bg-slate-950 rounded-xl border border-slate-800 overflow-hidden cursor-crosshair group"
+                style={{ aspectRatio: `${layerFrame.width} / ${layerFrame.height}` }}
+                className="relative w-full bg-slate-950 rounded-xl border border-slate-800 overflow-hidden cursor-crosshair group"
               >
                 <img
                   src={activeSlide.imageUrl}
                   alt={activeSlide.title}
+                  onLoad={onMediaLoad}
                   className="w-full h-full object-contain pointer-events-none"
                 />
 
@@ -600,10 +649,7 @@ export const ScreenshotLayeringPanel: React.FC<ScreenshotLayeringProps> = ({
                   style={framePointAsPercent(
                     activeSlide.targetX,
                     activeSlide.targetY,
-                    {
-                      width: 1920,
-                      height: 1080,
-                    },
+                    layerFrame,
                   )}
                   className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none animate-bounce"
                 >

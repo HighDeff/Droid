@@ -15,6 +15,8 @@ import {
   handleAutonomousStep,
   handleRecalibrateStep,
   handleAdaptiveRetry,
+  handleSynthesizeSteps,
+  handleRecordOutcome,
 } from "./routes/dual-ai-pipeline";
 import { centralLogHub } from "./log-hub";
 import { spawn } from "child_process";
@@ -79,6 +81,11 @@ export function createServer() {
   app.use("/api/assistant/verification", requireApiAccess, verificationReportsRouter);
   app.use("/api/assistant/scheduling", requireApiAccess, schedulingRouter);
   app.use("/api/assistant/method-learning", requireApiAccess, methodLearningRouter);
+  // NOTE: six feature routers (benchmark, rebound, route-flow, watchdog,
+  // vision-workflow, v2) were previously mounted here but every handler
+  // returned hardcoded fake data with zero client callers. They were removed
+  // (2026-10-03) rather than keep lying about success. Re-add them only with
+  // real implementations.
   app.use("/api", createApiRateLimiter(), requireApiAccess);
 
   // Example API routes
@@ -98,6 +105,8 @@ export function createServer() {
   // Dual-AI Perception, Reasoning Planner & Adaptive Retry Pipeline
   app.post("/api/ai/describe-screen", handleDescribeScreen);
   app.post("/api/ai/plan-and-act", handlePlanAndAct);
+  app.post("/api/ai/synthesize-steps", handleSynthesizeSteps);
+  app.post("/api/ai/record-outcome", handleRecordOutcome);
   app.post("/api/ai/autonomous-step", handleAutonomousStep);
   app.post("/api/ai/recalibrate-step", handleRecalibrateStep);
   app.post("/api/ai/adaptive-retry", handleAdaptiveRetry);
@@ -492,6 +501,57 @@ except Exception as e:
       }, 5000);
     } catch (e) {
       res.json({ success: false, devices: [], error: String(e) });
+    }
+  });
+
+  // Device details for the ADB grid (model, battery, resolution)
+  app.post("/api/adb/device-info", async (req, res) => {
+    try {
+      const { deviceId } = req.body;
+      let safeDeviceId: string;
+      try {
+        safeDeviceId = validateDeviceId(deviceId);
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          error: error instanceof Error ? error.message : "Invalid device ID",
+        });
+      }
+      const runAdb = (args: string[]): Promise<string> =>
+        new Promise((resolve) => {
+          const py = spawn("adb", ["-s", safeDeviceId, ...args], {
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          let out = "";
+          py.stdout.on("data", (d) => (out += d.toString()));
+          py.on("close", () => resolve(out.trim()));
+          py.on("error", () => resolve(""));
+          setTimeout(() => {
+            try {
+              py.kill();
+            } catch {}
+            resolve(out.trim());
+          }, 5000);
+        });
+      const [model, batteryOut, wmSize] = await Promise.all([
+        runAdb(["shell", "getprop", "ro.product.model"]),
+        runAdb(["shell", "dumpsys", "battery"]),
+        runAdb(["shell", "wm", "size"]),
+      ]);
+      const levelMatch = batteryOut.match(/level:\s*(\d+)/);
+      const sizeMatch =
+        wmSize.match(/Physical size:\s*(\d+x\d+)/) ||
+        wmSize.match(/(\d+x\d+)/);
+      res.json({
+        success: true,
+        deviceId: safeDeviceId,
+        model: model || safeDeviceId,
+        batteryLevel: levelMatch ? parseInt(levelMatch[1], 10) : null,
+        resolution: sizeMatch ? sizeMatch[1] : null,
+        connectionType: safeDeviceId.includes(":") ? "wifi" : "usb",
+      });
+    } catch (e) {
+      res.json({ success: false, error: String(e) });
     }
   });
 
