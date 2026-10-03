@@ -289,8 +289,39 @@ export const ScreenshotPackBuilderStudio: React.FC<
 
   // Dispatch Action on Live Screen via PyAutoGUI
   const handleExecuteOnLiveScreen = async () => {
+    const frameAction = selectedFrame.action;
+    // OCR verify is a vision check, not a device action.
+    if (frameAction === "ocr_verify") {
+      setStatusLog(`👁 OCR verify: capturing screen and checking for "${selectedFrame.payloadText || ""}"…`);
+      try {
+        const capRes = await fetch(apiUrl("/api/capture-screen"));
+        const capData = await capRes.json().catch(() => ({}));
+        let found = false;
+        if (capData.imageData) {
+          const descRes = await fetch(apiUrl("/api/ai/describe-screen"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imageData: capData.imageData }),
+          });
+          const descData = await descRes.json().catch(() => ({}));
+          const haystack = JSON.stringify(descData.report || {}).toLowerCase();
+          const expected = (selectedFrame.payloadText || "").trim().toLowerCase();
+          found = !!expected && haystack.includes(expected);
+        }
+        setStatusLog(
+          found
+            ? `✓ OCR verified "${selectedFrame.payloadText}" on screen.`
+            : `✗ OCR did not find "${selectedFrame.payloadText}" on screen.`,
+        );
+      } catch (err) {
+        setStatusLog(
+          `✗ OCR verify failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return;
+    }
     setStatusLog(
-      `⚡ Dispatching "${selectedFrame.action.toUpperCase()}" at (${selectedFrame.targetCoords.x}, ${selectedFrame.targetCoords.y}) to Live OS...`,
+      `⚡ Dispatching "${frameAction.toUpperCase()}" at (${selectedFrame.targetCoords.x}, ${selectedFrame.targetCoords.y}) to Live OS...`,
     );
     try {
       const res = await fetch(apiUrl("/api/execute-task"), {
@@ -303,7 +334,7 @@ export const ScreenshotPackBuilderStudio: React.FC<
             id: `pack_act_${Date.now()}`,
             name: selectedFrame.title,
             description: selectedFrame.expectedOutcome,
-            action: selectedFrame.action,
+            action: frameAction,
             targetPosition: selectedFrame.targetCoords,
             textPayload: selectedFrame.payloadText,
           },
@@ -315,11 +346,13 @@ export const ScreenshotPackBuilderStudio: React.FC<
           `✓ Action executed successfully on live OS at (${selectedFrame.targetCoords.x}, ${selectedFrame.targetCoords.y}).`,
         );
       } else {
-        setStatusLog(`✓ Dispatched action opcode to motor agent.`);
+        setStatusLog(
+          `✗ Action failed: ${String(data.error || "unknown error").slice(0, 120)}`,
+        );
       }
     } catch (err) {
       setStatusLog(
-        `✓ Simulated motor execution at (${selectedFrame.targetCoords.x}, ${selectedFrame.targetCoords.y}).`,
+        `✗ Dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   };

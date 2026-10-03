@@ -68,13 +68,12 @@ export interface ChronologicalLogEntry {
 }
 
 interface MasterWorkflowOrchestratorProps {
-  onStageChange?: (stageId: number, status: string) => void;
   activeModelName?: string;
 }
 
 export const MasterWorkflowOrchestrator: React.FC<
   MasterWorkflowOrchestratorProps
-> = ({ onStageChange, activeModelName = "Qwen 2.5-VL (GGUF Local)" }) => {
+> = ({ activeModelName = "Qwen 2.5-VL (GGUF Local)" }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [currentStageIndex, setCurrentStageIndex] = useState(1);
   const [iterationCount, setIterationCount] = useState(1);
@@ -84,6 +83,8 @@ export const MasterWorkflowOrchestrator: React.FC<
 
   // Non-repetition failed routes ledger
   const [failedMethodsLedger, setFailedMethodsLedger] = useState<string[]>([]);
+  const [nonRepetitionEnabled, setNonRepetitionEnabled] = useState(true);
+  const [aiReviewEnabled, setAiReviewEnabled] = useState(true);
 
   // 7-Stage Pipeline
   const [stages, setStages] = useState<WorkflowStage[]>([
@@ -200,7 +201,19 @@ export const MasterWorkflowOrchestrator: React.FC<
     let timer: any;
     if (isRunning) {
       timer = setInterval(() => {
-        setElapsedTotalSec((prev) => prev + 1);
+        setElapsedTotalSec((prev) => {
+          const next = prev + 1;
+          // Enforce the duration cap — the loop actually stops.
+          if (next >= maxDurationSec) {
+            setIsRunning(false);
+            setStages((st) =>
+              st.map((s) =>
+                s.status === "running" ? { ...s, status: "idle" } : s,
+              ),
+            );
+          }
+          return next;
+        });
 
         // Advance stages dynamically
         setStages((prevStages) => {
@@ -219,8 +232,19 @@ export const MasterWorkflowOrchestrator: React.FC<
             setCurrentStageIndex(nextIdx);
 
             if (nextIdx === 1) {
-              setIterationCount((i) => i + 1);
+              setIterationCount((i) => {
+                const next = i + 1;
+                // Enforce the iteration cap — the loop actually stops.
+                if (next > maxIterations) {
+                  setIsRunning(false);
+                }
+                return Math.min(next, maxIterations);
+              });
             }
+
+            // Record the stage outcome in the non-repetition ledger.
+            const ledgerKey = `${current.nonRepetitionKey}@${new Date().toISOString()}`;
+            setFailedMethodsLedger((l) => [ledgerKey, ...l].slice(0, 50));
 
             // Log event
             const newLog: ChronologicalLogEntry = {
@@ -230,13 +254,15 @@ export const MasterWorkflowOrchestrator: React.FC<
               action: current.name,
               modelUsed: activeModelName,
               result: "passed",
-              notes: `Stage verified with ${(current.aiVerificationConfidence * 100).toFixed(0)}% AI confidence.`,
+              notes: aiReviewEnabled
+                ? `Stage verified with ${(current.aiVerificationConfidence * 100).toFixed(0)}% AI confidence.`
+                : "AI review disabled — stage advanced on timer only.",
             };
             setLogs((l) => [newLog, ...l.slice(0, 20)]);
 
             return prevStages.map((s) =>
               s.id === current.id
-                ? { ...s, status: "verified", aiVerificationConfidence: 0.98 }
+                ? { ...s, status: "verified", aiVerificationConfidence: aiReviewEnabled ? 0.98 : 0 }
                 : s.id === nextIdx
                   ? { ...s, status: "running", durationSeconds: 0 }
                   : s,
@@ -246,7 +272,7 @@ export const MasterWorkflowOrchestrator: React.FC<
       }, 1000);
     }
     return () => clearInterval(timer);
-  }, [isRunning, currentStageIndex, activeModelName]);
+  }, [isRunning, currentStageIndex, activeModelName, maxIterations, maxDurationSec, aiReviewEnabled]);
 
   const handleToggleOrchestrator = () => {
     setIsRunning(!isRunning);
@@ -272,20 +298,22 @@ export const MasterWorkflowOrchestrator: React.FC<
       <TabContextualSettingsBar
         tabType="pipeline"
         title="Autonomous Multi-Stage Automation Cycle (7 Stages) & AI Review Engine"
-        badge={isRunning ? "CYCLE ACTIVE ⚡" : "CYCLE IDLE"}
+        badge={isRunning ? "CYCLE ACTIVE ⚡ · SIMULATED TELEMETRY" : "CYCLE IDLE · SIMULATED TELEMETRY"}
         settings={[
           {
             id: "non_rep",
             label: "Non-Repetition Ledger for Failed Methods",
             type: "switch",
-            value: true,
-            description: "Block repeating unverified actions",
+            value: nonRepetitionEnabled,
+            description: nonRepetitionEnabled
+              ? `Block repeating unverified actions (${failedMethodsLedger.length} entries)`
+              : "Ledger disabled",
           },
           {
             id: "ai_review",
             label: "Continuous AI Review & Completion Check",
             type: "switch",
-            value: true,
+            value: aiReviewEnabled,
             description: "Verify pixel states with active model",
           },
           {
@@ -323,6 +351,12 @@ export const MasterWorkflowOrchestrator: React.FC<
             variant: "secondary",
           },
         ]}
+        onSettingChange={(id, value) => {
+          if (id === "max_iter") setMaxIterations(Math.max(1, Number(value) || 1));
+          else if (id === "time_limit") setMaxDurationSec(Math.max(60, Number(value) || 300));
+          else if (id === "non_rep") setNonRepetitionEnabled(!!value);
+          else if (id === "ai_review") setAiReviewEnabled(!!value);
+        }}
       />
 
       {/* Top Telemetry Summary Bar */}
