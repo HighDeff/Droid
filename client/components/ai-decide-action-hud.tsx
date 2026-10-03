@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SequenceStep } from "./live-screen-hud";
 import { ScreenPerceptionReport } from "./dual-ai-copilot-panel";
+import { apiUrl } from "@/lib/api";
 
 type DecideMode = "type" | "sequence" | "navigate";
 
@@ -38,6 +39,10 @@ interface AIDecideActionHUDProps {
   screenshotUrl?: string;
   targetDevice?: "desktop" | "android";
   deviceId?: string | null;
+  /** Actual frame pixel size for coordinate rescaling at execution time. */
+  frameSize?: { width: number; height: number } | null;
+  /** Typed user objective forwarded to the planner (instead of "auto"). */
+  userObjective?: string;
   onAddStep?: (step: Partial<SequenceStep> & { x: number; y: number }) => void;
   onRunSequence?: () => void;
   onNavigate?: (x: number, y: number, label: string) => void;
@@ -56,6 +61,8 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
   screenshotUrl,
   targetDevice = "desktop",
   deviceId,
+  frameSize,
+  userObjective,
   onAddStep,
   onRunSequence,
   onNavigate,
@@ -82,6 +89,36 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
     "AI ready to decide — click 'AI Decide' or pick a mode",
   );
   const [executing, setExecuting] = useState(false);
+  // The planner's concrete next action (when available) so "AI Decide" can
+  // actually execute it instead of only switching tabs.
+  const [aiAction, setAiAction] = useState<{
+    action: string;
+    x: number;
+    y: number;
+    text?: string;
+    title?: string;
+  } | null>(null);
+
+  /**
+   * Single choke point for every /api/execute-task call in this HUD.
+   * Injects the selected device + frame size so desktop (pyautogui) and
+   * android (ADB) routing and coordinate rescaling always apply.
+   */
+  const executeSingleTask = async (task: Record<string, any>) => {
+    const res = await fetch(apiUrl("/api/execute-task"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        targetDevice,
+        deviceId,
+        frameSize: frameSize || undefined,
+        task,
+      }),
+    });
+    return res.json();
+  };
+
+  const deviceLabel = targetDevice === "android" ? "ADB" : "pyautogui";
 
   // Auto-suggest coordinates from perception when available
   useEffect(() => {
@@ -106,28 +143,43 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
 
   const handleAIDecide = async () => {
     setAiDeciding(true);
+    setAiAction(null);
     setStatus(
       "AI analyzing live screen to decide: type / sequence / navigate...",
     );
     try {
-      // Use perception to decide locally with simple heuristics, plus call planner for reasoning
-      const elements = perceptionReport?.elements || [];
+      // Refuse to decide on degraded perception — acting on fabricated
+      // targets is worse than not acting.
+      if (perceptionReport?.degraded) {
+        setStatus(
+          "Perception degraded — re-scan the screen before AI decides.",
+        );
+        setAiDecision(null);
+        return;
+      }
+
+      // Perception-dominant heuristic: screen content always wins. A saved
+      // sequence is only suggested when the planner/user objective asks for it,
+      // never as an unconditional override.
+      const elements = (perceptionReport?.elements || []).filter(
+        (e) => e.confidence > 0.3,
+      );
       const hasInput = elements.some((e) => e.type === "input");
       const hasButton = elements.some((e) => e.type === "button");
       let decidedMode: DecideMode = "navigate";
       let reasoning = "";
-      if (hasInput && sequence.length === 0) {
+      if (hasInput) {
         decidedMode = "type";
         reasoning = `Detected input field "${elements.find((e) => e.type === "input")?.name || "Input"}" — AI decides to TYPE text.`;
-      } else if (sequence.length > 0) {
-        decidedMode = "sequence";
-        reasoning = `Found ${sequence.length} saved steps — AI decides to PERFORM ACTION SEQUENCE.`;
       } else if (hasButton) {
         decidedMode = "navigate";
         reasoning = `Detected button "${elements.find((e) => e.type === "button")?.name || "CTA"}" — AI decides to NAVIGATE and click.`;
+      } else if (sequence.length > 0) {
+        decidedMode = "sequence";
+        reasoning = `No actionable element detected; ${sequence.length} saved steps available — AI suggests PERFORMING the saved sequence.`;
       } else {
         decidedMode = "navigate";
-        reasoning = `No specific input/button, AI defaults to NAVIGATE to feedback position.`;
+        reasoning = `No specific input/button detected — AI defaults to NAVIGATE to feedback position.`;
       }
 
       // Try to get richer reasoning from backend planner if available
@@ -135,35 +187,75 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
         const liveImg = screenshotUrl || "";
         let report = perceptionReport;
         if (!report && liveImg) {
-          const r = await fetch("/api/ai/describe-screen", {
+          const r = await fetch(apiUrl("/api/ai/describe-screen"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ imageData: liveImg }),
+            body: JSON.stringify({ imageData: liveImg, frameSize }),
           });
           const j = await r.json();
           if (j.success && j.report) report = j.report;
         }
-        if (report) {
-          const pr = await fetch("/api/ai/plan-and-act", {
+        if (report && !report.degraded) {
+          const pr = await fetch(apiUrl("/api/ai/plan-and-act"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               perceptionReport: report,
-              userObjective: `Decide whether to type text, perform sequence, or navigate. Current sequence has ${sequence.length} steps.`,
+              userObjective:
+                userObjective ||
+                `Decide whether to type text, perform sequence, or navigate. Current sequence has ${sequence.length} steps.`,
+              targetDevice,
+              deviceId,
+              frameSize: frameSize || undefined,
+              executeImmediately: false,
             }),
           });
           const pj = await pr.json();
           if (pj.success && pj.decision?.thinking) {
             reasoning = `${pj.decision.thinking.reasoning} (Strategy: ${pj.decision.thinking.strategy})`;
-            const title = pj.decision.nextAction?.title?.toLowerCase() || "";
-            if (title.includes("type") || title.includes("input"))
-              decidedMode = "type";
-            else if (title.includes("sequence") || title.includes("step"))
-              decidedMode = "sequence";
-            else decidedMode = "navigate";
+            const na = pj.decision.nextAction;
+            if (na && typeof na.x === "number" && typeof na.y === "number") {
+              // Keep the planner's concrete action — this is what
+              // "Execute AI decision" will run.
+              const actionKind = String(
+                na.actionType || na.action || "",
+              ).toLowerCase();
+              setAiAction({
+                action: actionKind || "click",
+                x: Math.round(na.x),
+                y: Math.round(na.y),
+                text: na.textPayload || na.text || "",
+                title: na.title || "AI action",
+              });
+              if (
+                actionKind.includes("type") ||
+                actionKind.includes("input")
+              ) {
+                decidedMode = "type";
+                setTypeX(Math.round(na.x));
+                setTypeY(Math.round(na.y));
+                if (na.textPayload || na.text) setTypeText(String(na.textPayload || na.text));
+              } else {
+                decidedMode = "navigate";
+                setNavX(Math.round(na.x));
+                setNavY(Math.round(na.y));
+                setNavLabel(na.targetName || na.title || "AI Target");
+              }
+            } else {
+              const title = String(na?.title || "").toLowerCase();
+              if (title.includes("type") || title.includes("input"))
+                decidedMode = "type";
+              else decidedMode = "navigate";
+            }
+          } else if (!pj.success) {
+            setStatus(`Planner note: ${pj.error || "no decision returned"}`);
           }
         }
-      } catch {}
+      } catch (plannerErr) {
+        setStatus(
+          `Planner unreachable (${String(plannerErr).slice(0, 60)}); using local heuristic.`,
+        );
+      }
 
       setMode(decidedMode);
       setAiDecision({
@@ -185,6 +277,42 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
     }
   };
 
+  // Execute the planner's concrete next action on the selected device.
+  const handleExecuteAiDecision = async () => {
+    if (!aiAction) return;
+    setExecuting(true);
+    setStatus(
+      `AI executing "${aiAction.title}" at (${aiAction.x},${aiAction.y}) via ${deviceLabel}...`,
+    );
+    try {
+      const data = await executeSingleTask({
+        id: `ai_decision_${Date.now()}`,
+        name: aiAction.title || "AI Decision",
+        action: aiAction.action,
+        targetPosition: { x: aiAction.x, y: aiAction.y },
+        textPayload: aiAction.text || "",
+      });
+      setStatus(
+        data.success
+          ? `✓ AI decision executed @ (${aiAction.x},${aiAction.y})`
+          : `✗ AI decision failed: ${data.error}`,
+      );
+      if (data.success) {
+        onAddStep?.({
+          x: aiAction.x,
+          y: aiAction.y,
+          action: aiAction.action as any,
+          text: aiAction.text,
+          name: aiAction.title || "AI Decision",
+        });
+      }
+    } catch (e) {
+      setStatus("AI decision error: " + String(e).slice(0, 60));
+    } finally {
+      setExecuting(false);
+    }
+  };
+
   const handleExecuteType = async () => {
     if (!typeText.trim()) {
       setStatus("Enter text to type first");
@@ -192,40 +320,25 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
     }
     setExecuting(true);
     setStatus(
-      `Typing "${typeText}" at (${typeX},${typeY}) via ${targetDevice}...`,
+      `Typing "${typeText}" at (${typeX},${typeY}) via ${deviceLabel}...`,
     );
     try {
-      const res = await fetch("/api/execute-task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetDevice,
-          deviceId,
-          task: {
-            id: `ai_type_${Date.now()}`,
-            name: `AI Type: ${typeText.slice(0, 20)}`,
-            action: typeAction,
-            targetPosition: { x: typeX, y: typeY },
-            textPayload: typeText,
-            text: typeText,
-          },
-        }),
+      const data = await executeSingleTask({
+        id: `ai_type_${Date.now()}`,
+        name: `AI Type: ${typeText.slice(0, 20)}`,
+        action: typeAction,
+        targetPosition: { x: typeX, y: typeY },
+        textPayload: typeText,
+        text: typeText,
       });
-      const data = await res.json();
       setStatus(
         data.success
           ? `✓ Typed "${typeText}" @ (${typeX},${typeY})`
           : `✗ Type failed: ${data.error}`,
       );
+      // onTypeText adds the step in the parent — do NOT also call onAddStep
+      // here (that inserted every step twice).
       onTypeText?.(typeX, typeY, typeText, typeAction);
-      // Also add as step for reusability
-      onAddStep?.({
-        x: typeX,
-        y: typeY,
-        action: typeAction,
-        text: typeText,
-        name: `AI Type: ${typeText.slice(0, 16)}`,
-      });
     } catch (e) {
       setStatus("Type error: " + String(e).slice(0, 60));
     } finally {
@@ -240,32 +353,31 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
     }
     setExecuting(true);
     setStatus(
-      `Performing ${sequence.length} step sequence via ${targetDevice}...`,
+      `Performing ${sequence.length} step sequence via ${deviceLabel}...`,
     );
     try {
       if (onRunSequence) {
         await onRunSequence();
         setStatus(
-          `✓ Sequence of ${sequence.length} steps dispatched via pyautogui`,
+          `✓ Sequence of ${sequence.length} steps dispatched to ${deviceLabel}`,
         );
       } else {
-        // Fallback: dispatch each step directly
+        // Fallback: dispatch each step directly (device-aware, stoppable
+        // per step by the parent when onRunSequence is provided).
         for (const s of sequence) {
-          await fetch("/api/execute-task", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              targetDevice,
-              deviceId,
-              task: {
-                id: s.id,
-                name: s.name,
-                action: s.action,
-                targetPosition: { x: s.x, y: s.y },
-                textPayload: s.text || "",
-              },
-            }),
+          const data = await executeSingleTask({
+            id: s.id,
+            name: s.name,
+            action: s.action,
+            targetPosition: { x: s.x, y: s.y },
+            textPayload: s.text || "",
+            keyPayload: (s as any).keyPayload || "enter",
+            delayMs: s.delayMs,
           });
+          if (!data.success) {
+            setStatus(`✗ Sequence stopped at "${s.name}": ${data.error}`);
+            return;
+          }
           await new Promise((r) => setTimeout(r, s.delayMs || 500));
         }
         setStatus(`✓ Sequence executed`);
@@ -280,36 +392,23 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
   const handleExecuteNavigate = async () => {
     setExecuting(true);
     setStatus(
-      `Navigating to (${navX},${navY}) ${navLabel} via ${targetDevice}...`,
+      `Navigating to (${navX},${navY}) ${navLabel} via ${deviceLabel}...`,
     );
     try {
-      const res = await fetch("/api/execute-task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetDevice,
-          deviceId,
-          task: {
-            id: `ai_nav_${Date.now()}`,
-            name: `Navigate: ${navLabel}`,
-            action: "click",
-            targetPosition: { x: navX, y: navY },
-          },
-        }),
+      const data = await executeSingleTask({
+        id: `ai_nav_${Date.now()}`,
+        name: `Navigate: ${navLabel}`,
+        action: "click",
+        targetPosition: { x: navX, y: navY },
       });
-      const data = await res.json();
       setStatus(
         data.success
           ? `✓ Navigated to (${navX},${navY})`
           : `✗ Navigate failed: ${data.error}`,
       );
+      // onNavigate adds the step in the parent — do NOT also call onAddStep
+      // here (that inserted every step twice).
       onNavigate?.(navX, navY, navLabel);
-      onAddStep?.({
-        x: navX,
-        y: navY,
-        action: "click",
-        name: `Navigate: ${navLabel}`,
-      });
     } catch (e) {
       setStatus("Navigate error: " + String(e).slice(0, 60));
     } finally {
@@ -331,6 +430,19 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
               </Badge>
             )}
           </CardTitle>
+          <div className="flex items-center gap-2">
+          {aiAction && !aiDeciding && (
+            <Button
+              size="sm"
+              onClick={handleExecuteAiDecision}
+              disabled={executing}
+              title={`Run the planner's action: ${aiAction.title} @ (${aiAction.x},${aiAction.y})`}
+              className="h-7 text-xs gap-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              {executing ? "Executing..." : "Execute AI decision"}
+            </Button>
+          )}
           <Button
             size="sm"
             onClick={handleAIDecide}
@@ -344,6 +456,7 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
             )}
             {aiDeciding ? "Deciding..." : "AI Decide"}
           </Button>
+          </div>
         </div>
         <CardDescription className="text-[11px] text-slate-400">
           {aiDecision
@@ -436,7 +549,7 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
                   Type
                 </button>
                 <span className="text-[10px] text-slate-500 ml-auto">
-                  Uses pyautogui.typewrite via {targetDevice}
+                  Uses {deviceLabel} via {targetDevice}
                 </span>
               </div>
               <Button
@@ -508,7 +621,7 @@ export const AIDecideActionHUD: React.FC<AIDecideActionHUDProps> = ({
                 <Zap className="w-3.5 h-3.5" />{" "}
                 {executing
                   ? "Running..."
-                  : `Perform Full Sequence (${sequence.length}) via pyautogui`}
+                  : `Perform Full Sequence (${sequence.length}) via ${deviceLabel}`}
               </Button>
               <p className="text-[10px] text-slate-500">
                 Runs each step with drift `{targetDevice}` + random 1-3s
