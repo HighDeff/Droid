@@ -138,7 +138,7 @@ interface LiveScreenHUDProps {
   targetDevice?: "desktop" | "android";
   deviceId?: string | null;
   /** Called when the user runs the full sequence (parent owns device-aware execution). */
-  onRunSequence?: () => void;
+  onRunSequence?: () => Promise<void>;
   /** Reports the measured frame pixel size so parents can rescale coordinates. */
   onFrameSizeChange?: (size: { width: number; height: number }) => void;
   onAddStep: (
@@ -157,6 +157,12 @@ interface LiveScreenHUDProps {
   onAiDecideMode?: (active: boolean) => void;
   /** LEARNING AUTO-ACT mode: parent plans from learned methods and executes. */
   onLearningAutoAct?: () => void;
+  /**
+   * RUN with AI-derived steps: when the sequence is empty, the parent
+   * perceives the live screen and asks the planner to synthesize steps from
+   * the screenshot, then runs them for real. Returns true if it handled the run.
+   */
+  onSynthesizeAndRun?: () => Promise<boolean>;
   /** High-level objective forwarded to AI-driven modes. */
   userObjective?: string;
 }
@@ -184,6 +190,7 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
   onStopSequence,
   onAiDecideMode,
   onLearningAutoAct,
+  onSynthesizeAndRun,
   userObjective,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -565,6 +572,8 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
     setIsRunningSequence(false);
     setIsReplayingMovement(false);
     setReplayingCursorPos(null);
+    // Don't leave the historical motion trail painted over the HUD.
+    setSplineMotionTrail([]);
     setRunStatus("Stopped (Esc).");
   };
 
@@ -599,7 +608,10 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
 
   const handleRunSequenceOnDevice = async () => {
     if (onRunSequence) {
-      onRunSequence();
+      // Awaited so the mode stays visibly active until the parent finishes.
+      await onRunSequence().catch((e) =>
+        setRunStatus(`Run failed: ${String(e).slice(0, 60)}`),
+      );
       return;
     }
     if (sequence.length === 0) {
@@ -791,8 +803,13 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
     }
     setIsReplayingMovement(false);
     setReplayingCursorPos(null);
-    if (modeTokenRef.current === token)
+    if (modeTokenRef.current === token) {
       setModeBusyLabel("simulation complete — nothing real was touched");
+      // Fade the trail so it doesn't linger over the HUD.
+      setTimeout(() => {
+        if (modeTokenRef.current === token) setSplineMotionTrail([]);
+      }, 4000);
+    }
   };
 
   /** Mode dispatcher — every button does something DIFFERENT. */
@@ -801,9 +818,26 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
     switch (mode) {
       case "run-real":
         // REAL: delegates to the parent (device-aware execution) or runs locally.
+        // Empty sequence? The AI derives steps from the live screenshot instead
+        // of failing — genuine screenshot interpretation, not a canned message.
         setActiveMode(mode);
-        setModeBusyLabel(`running ${sequence.length} steps for real…`);
-        await handleRunSequenceOnDevice();
+        if (sequence.length === 0 && onSynthesizeAndRun) {
+          setModeBusyLabel("AI interpreting screenshot to derive steps…");
+          // Belt and suspenders: the parent has its own timeouts/abort, but
+          // the mode must never wedge forever awaiting it.
+          const handled = await Promise.race([
+            onSynthesizeAndRun().catch(() => false),
+            new Promise<boolean>((r) =>
+              setTimeout(() => r(false), 120000),
+            ),
+          ]);
+          if (!handled) {
+            setModeBusyLabel("no steps to run — record steps first");
+          }
+        } else {
+          setModeBusyLabel(`running ${sequence.length} steps for real…`);
+          await handleRunSequenceOnDevice();
+        }
         setActiveMode(null);
         break;
       case "step-run":
@@ -838,6 +872,12 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
         break;
       case "record-run":
         // Arm recording; STOP converts the capture to steps and runs it for real.
+        if (targetDevice === "android") {
+          setModeBusyLabel(
+            "record-run needs a hover cursor — not available on Android",
+          );
+          break;
+        }
         setRecordedTrajectory([]);
         setLocalRecording(true);
         setActiveMode(mode);
@@ -861,29 +901,40 @@ export const LiveScreenHUD: React.FC<LiveScreenHUDProps> = ({
         setModeBusyLabel("capture too short — nothing to run");
         return;
       }
-      const stride = Math.max(1, Math.floor(pts.length / 10));
-      const sampled = pts.filter((_, i) => i % stride === 0);
-      setModeBusyLabel(`executing ${sampled.length} captured waypoints for real…`);
-      for (let i = 0; i < sampled.length; i++) {
-        if (modeTokenRef.current !== token) break;
-        const w = sampled[i];
-        setModeBusyLabel(`captured step ${i + 1}/${sampled.length} executing…`);
-        try {
-          await postTaskAbortable(
-            {
-              id: `recrun_${Date.now()}_${i}`,
-              name: `Captured waypoint #${i + 1}`,
-              action: "click",
-              targetPosition: { x: Math.round(w.x), y: Math.round(w.y) },
-              delayMs: 250,
-            },
-            20000,
-          );
-        } catch {
-          break;
-        }
+      // Faithful replay: the capture is a MOVEMENT trajectory, so stream it
+      // as a real mouse route (one device call) instead of inventing a click
+      // at every waypoint — the old code clicked where the user only moved.
+      const stride = Math.max(1, Math.floor(pts.length / 60));
+      const sampled = pts
+        .filter((_, i) => i % stride === 0)
+        .map((w) => ({ x: Math.round(w.x), y: Math.round(w.y) }));
+      setModeBusyLabel(
+        `replaying ${sampled.length} captured waypoints as a mouse route…`,
+      );
+      try {
+        const data = await postTaskAbortable(
+          {
+            id: `recrun_${Date.now()}`,
+            name: `Captured mouse route (${sampled.length} waypoints)`,
+            action: "stream_mouse_route",
+            routePoints: sampled,
+            speedMultiplier: 1,
+            driftPx: 4,
+            isDrag: false,
+            delayMs: 250,
+          },
+          60000,
+        );
+        if (modeTokenRef.current !== token) return;
+        setModeBusyLabel(
+          data?.success
+            ? "record-run complete — route replayed"
+            : `record-run failed: ${String(data?.error || "unknown").slice(0, 60)}`,
+        );
+      } catch {
+        if (modeTokenRef.current === token)
+          setModeBusyLabel("record-run aborted");
       }
-      if (modeTokenRef.current === token) setModeBusyLabel("record-run complete");
       return;
     }
     stopAllModes();
