@@ -7,6 +7,7 @@ import sys
 import time
 import random
 import math
+import re
 import base64
 import subprocess
 import platform
@@ -380,6 +381,35 @@ def get_adb_devices() -> list:
         return devices
     except Exception:
         return []
+
+
+def get_adb_screen_size(device_id: str = None) -> tuple:
+    """Real device pixel dimensions via `adb shell wm size`. Returns (w, h) or None."""
+    try:
+        cmd = ["adb"]
+        if device_id:
+            cmd.extend(["-s", device_id])
+        cmd.extend(["shell", "wm", "size"])
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        m = re.search(r"(\d+)\s*x\s*(\d+)", res.stdout)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+    except Exception:
+        pass
+    return None
+
+
+def rescale_point(x: int, y: int, frame_size, device_size) -> tuple:
+    """Map a point from frame pixel space to real device pixel space."""
+    try:
+        fw = int(frame_size.get("width", 0)) if isinstance(frame_size, dict) else 0
+        fh = int(frame_size.get("height", 0)) if isinstance(frame_size, dict) else 0
+        dw, dh = device_size
+        if fw > 0 and fh > 0 and dw > 0 and dh > 0 and (fw != dw or fh != dh):
+            return (int(round(x * dw / fw)), int(round(y * dh / fh)))
+    except Exception:
+        pass
+    return (x, y)
 
 
 def execute_adb_tap(x: int, y: int, device_id: str = None) -> bool:

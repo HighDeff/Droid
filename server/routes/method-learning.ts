@@ -54,6 +54,82 @@ router.post("/learn", async (req: Request, res: Response) => {
   }
 });
 
+// Learn from an inline execution outcome (no state-repository lookup needed).
+// The client posts what actually happened; the server builds the minimal
+// execution/plan records the learning system needs and stores the method.
+const learnInlineBody = z.object({
+  sessionId: z.string().min(1),
+  context: z.object({
+    applicationName: z.string().optional(),
+    screenLayout: z.string().optional(),
+    userIntent: z.string().min(1),
+    deviceType: z.string().default("desktop"),
+  }),
+  outcome: z.object({
+    success: z.boolean(),
+    durationMs: z.number().default(0),
+    steps: z
+      .array(z.object({ action: z.string(), title: z.string() }))
+      .default([]),
+    notes: z.array(z.string()).default([]),
+  }),
+});
+
+router.post("/learn-inline", async (req: Request, res: Response) => {
+  try {
+    const body = learnInlineBody.parse(req.body);
+    const now = new Date().toISOString();
+    const started = new Date(Date.now() - body.outcome.durationMs).toISOString();
+    const context: LearningContext = {
+      sessionId: body.sessionId,
+      applicationName: body.context.applicationName,
+      screenLayout: body.context.screenLayout || "unknown",
+      userIntent: body.context.userIntent,
+      environmentalFactors: [],
+      timeOfDay: now,
+      deviceType: body.context.deviceType,
+    };
+    const stepCount = body.outcome.steps.length;
+    const execution: any = {
+      id: `exec_${Date.now()}`,
+      planId: `plan_${Date.now()}`,
+      sessionId: body.sessionId,
+      status: body.outcome.success ? "completed" : "failed",
+      currentStep: stepCount,
+      totalSteps: stepCount,
+      startedAt: started,
+      completedAt: now,
+      timeline: body.outcome.notes.map((n) => ({
+        status: "verification",
+        message: n,
+        timestamp: now,
+      })),
+      results: [],
+      evidence: [],
+    };
+    const plan: any = {
+      id: execution.planId,
+      sessionId: body.sessionId,
+      steps: body.outcome.steps.map((st) => ({
+        action: st.action,
+        title: st.title,
+        timing: "immediate",
+      })),
+    };
+    const method = methodLearningSystem.learnFromExecution(
+      execution,
+      plan,
+      context,
+    );
+    res.json({ success: true, method });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to learn",
+    });
+  }
+});
+
 // Get best method for a context
 router.post("/best-method", async (req: Request, res: Response) => {
   try {

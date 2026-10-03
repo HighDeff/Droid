@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 1. AI #1 Screen Auto-Description & Feedback Positioning
 export const handleDescribeScreen: RequestHandler = async (req, res) => {
   try {
-    const { imageData, endpoint, model } = req.body;
+    const { imageData, endpoint, model, frameSize } = req.body;
     if (!imageData) {
       return res
         .status(400)
@@ -27,6 +27,7 @@ export const handleDescribeScreen: RequestHandler = async (req, res) => {
       imageData,
       endpoint,
       model,
+      frameSize,
     );
     res.json({ success: true, report });
   } catch (err) {
@@ -46,6 +47,9 @@ export const handlePlanAndAct: RequestHandler = async (req, res) => {
       endpoint,
       model,
       executeImmediately = false,
+      targetDevice,
+      deviceId,
+      frameSize,
     } = req.body;
 
     if (!perceptionReport) {
@@ -64,7 +68,11 @@ export const handlePlanAndAct: RequestHandler = async (req, res) => {
     let executionResult: any = null;
 
     if (executeImmediately && decision.nextAction) {
-      executionResult = await dispatchActionToPython(decision.nextAction);
+      executionResult = await dispatchActionToPython(decision.nextAction, {
+        targetDevice,
+        deviceId,
+        frameSize,
+      });
     }
 
     res.json({
@@ -83,11 +91,13 @@ export const handlePlanAndAct: RequestHandler = async (req, res) => {
 // 3. Post-Execution Coordinate Recalibration
 export const handleRecalibrateStep: RequestHandler = async (req, res) => {
   try {
-    const { targetName, currentX, currentY, newElements } = req.body;
+    const { targetName, currentX, currentY, newElements, frameSize } = req.body;
+    const cx = Math.round((frameSize?.width || 1920) / 2);
+    const cy = Math.round((frameSize?.height || 1080) / 2);
     const result = adaptiveRetryEngine.recalibrateElementCoordinates(
       targetName || "",
-      currentX || 960,
-      currentY || 540,
+      currentX ?? cx,
+      currentY ?? cy,
       newElements || [],
     );
     res.json({ success: true, recalibration: result });
@@ -110,32 +120,42 @@ export const handleAdaptiveRetry: RequestHandler = async (req, res) => {
       currentY,
       textPayload,
       perception,
+      frameSize,
     } = req.body;
+    const rcx = Math.round((frameSize?.width || 1920) / 2);
+    const rcy = Math.round((frameSize?.height || 1080) / 2);
     const retryPlan = adaptiveRetryEngine.computeAdaptiveRetry(
       stepId || `step_${Date.now()}`,
       actionType || "click",
       targetName || "Target",
-      currentX || 960,
-      currentY || 540,
+      currentX ?? rcx,
+      currentY ?? rcy,
       textPayload,
       perception || {
         elements: [],
-        feedbackPosition: { x: 960, y: 540 },
+        feedbackPosition: { x: rcx, y: rcy },
         screenDescription: "",
       },
     );
 
     let executionResult: any = null;
     if (retryPlan.retryNeeded) {
-      executionResult = await dispatchActionToPython({
-        id: stepId,
-        title: `Retry (${retryPlan.attemptNumber}): ${targetName}`,
-        actionType: retryPlan.adaptedActionType,
-        x: retryPlan.newCoordinates.x,
-        y: retryPlan.newCoordinates.y,
-        textPayload: retryPlan.textPayload,
-        delayMs: retryPlan.delayMs,
-      });
+      executionResult = await dispatchActionToPython(
+        {
+          id: stepId,
+          title: `Retry (${retryPlan.attemptNumber}): ${targetName}`,
+          actionType: retryPlan.adaptedActionType,
+          x: retryPlan.newCoordinates.x,
+          y: retryPlan.newCoordinates.y,
+          textPayload: retryPlan.textPayload,
+          delayMs: retryPlan.delayMs,
+        },
+        {
+          targetDevice: req.body.targetDevice,
+          deviceId: req.body.deviceId,
+          frameSize: req.body.frameSize,
+        },
+      );
     }
 
     res.json({ success: true, retryPlan, executionResult });
@@ -150,7 +170,8 @@ export const handleAdaptiveRetry: RequestHandler = async (req, res) => {
 // 5. Unified Autonomous Co-Pilot Step (Perceive -> Plan -> Act -> Verify -> Recalibrate)
 export const handleAutonomousStep: RequestHandler = async (req, res) => {
   try {
-    const { imageData, userObjective, endpoint, model } = req.body;
+    const { imageData, userObjective, endpoint, model, targetDevice, deviceId, frameSize } =
+      req.body;
     if (!imageData) {
       return res
         .status(400)
@@ -161,6 +182,7 @@ export const handleAutonomousStep: RequestHandler = async (req, res) => {
       imageData,
       endpoint,
       model,
+      frameSize,
     );
     const decision = await aiPlannerEngine.planAndFormulateAction(
       perception,
@@ -171,7 +193,11 @@ export const handleAutonomousStep: RequestHandler = async (req, res) => {
 
     let executionResult: any = null;
     if (decision.nextAction) {
-      executionResult = await dispatchActionToPython(decision.nextAction);
+      executionResult = await dispatchActionToPython(decision.nextAction, {
+        targetDevice,
+        deviceId,
+        frameSize,
+      });
     }
 
     res.json({
@@ -195,8 +221,13 @@ function getPythonCmd(): string {
   return process.platform === "win32" ? "python" : "python3";
 }
 
-// Dispatch action to Python PyAutoGUI service
-export async function dispatchActionToPython(action: any): Promise<any> {
+// Dispatch action to Python PyAutoGUI / ADB service.
+// opts carry the caller's device selection; when omitted the action's own
+// fields win, falling back to desktop.
+export async function dispatchActionToPython(
+  action: any,
+  opts: { targetDevice?: string; deviceId?: string | null; frameSize?: { width: number; height: number } | null } = {},
+): Promise<any> {
   return new Promise((resolve) => {
     let resolved = false;
     const safeResolve = (val: any) => {
@@ -219,23 +250,29 @@ export async function dispatchActionToPython(action: any): Promise<any> {
       let output = "";
       let errorOutput = "";
 
-      // Normalize action type field from various callers
+      // Normalize action type field from various callers.
+      // Missing coordinates fall back to the center of the caller's frame
+      // (1920x1080 only when no frameSize was provided), never a magic pixel.
+      const frameW = opts.frameSize?.width || action.frameSize?.width || 1920;
+      const frameH = opts.frameSize?.height || action.frameSize?.height || 1080;
+      const fallbackX = Math.round(frameW / 2);
+      const fallbackY = Math.round(frameH / 2);
       const actType = action.actionType || action.action || "click";
-      let taskDesc = `Click at ${action.x || 960}, ${action.y || 540}`;
+      let taskDesc = `Click at ${action.x ?? fallbackX}, ${action.y ?? fallbackY}`;
       if (actType === "double_click") {
-        taskDesc = `Double click at ${action.x || 960}, ${action.y || 540}`;
+        taskDesc = `Double click at ${action.x ?? fallbackX}, ${action.y ?? fallbackY}`;
       } else if (actType === "right_click") {
-        taskDesc = `Right click at ${action.x || 960}, ${action.y || 540}`;
+        taskDesc = `Right click at ${action.x ?? fallbackX}, ${action.y ?? fallbackY}`;
       } else if (actType === "clear_and_type") {
-        taskDesc = `Clear and type "${action.textPayload || action.text || ""}" at ${action.x || 960}, ${action.y || 540}`;
+        taskDesc = `Clear and type "${action.textPayload || action.text || ""}" at ${action.x ?? fallbackX}, ${action.y ?? fallbackY}`;
       } else if (actType === "type_text" || actType === "type") {
-        taskDesc = `Type "${action.textPayload || action.text || ""}" at ${action.x || 960}, ${action.y || 540}`;
+        taskDesc = `Type "${action.textPayload || action.text || ""}" at ${action.x ?? fallbackX}, ${action.y ?? fallbackY}`;
       } else if (actType === "press_key") {
         taskDesc = `Press key: ${action.keyPayload || action.key || "enter"}`;
       } else if (actType === "hotkey") {
         taskDesc = `Hotkey: ${action.keyPayload || action.key || "ctrl+a"}`;
       } else if (actType === "scroll") {
-        taskDesc = `Scroll at ${action.x || 960}, ${action.y || 540}`;
+        taskDesc = `Scroll at ${action.x ?? fallbackX}, ${action.y ?? fallbackY}`;
       } else if (actType === "wait") {
         taskDesc = `Wait for ${action.delayMs || 500}ms`;
       }
@@ -249,19 +286,25 @@ export async function dispatchActionToPython(action: any): Promise<any> {
         createdAt: new Date(),
         action: actType,
         actionType: actType,
-        x: action.x || 960,
-        y: action.y || 540,
-        targetPosition: { x: action.x || 960, y: action.y || 540 },
+        x: action.x ?? fallbackX,
+        y: action.y ?? fallbackY,
+        targetPosition: { x: action.x ?? fallbackX, y: action.y ?? fallbackY },
         textPayload: action.textPayload || action.text || "",
         keyPayload: action.keyPayload || action.key || "enter",
         delayMs: action.delayMs || action.delay || 500,
         text: action.textPayload || action.text,
       };
 
-      // Wrap in {task: ...} envelope expected by python-service
+      // Wrap in {task: ...} envelope expected by python-service.
+      // Device routing: explicit opts > action fields > desktop default.
+      // The python service routes "android" to ADB and rescales frame
+      // coordinates to real device pixels when frameSize is provided.
       const envelope = {
         task: taskPayload,
-        targetDevice: action.targetDevice || "desktop",
+        targetDevice:
+          opts.targetDevice || action.targetDevice || "desktop",
+        deviceId: opts.deviceId || action.deviceId || null,
+        frameSize: opts.frameSize || action.frameSize || null,
       };
 
       python.stdin.write(JSON.stringify(envelope));
@@ -303,10 +346,20 @@ export async function dispatchActionToPython(action: any): Promise<any> {
         }
       });
 
-      setTimeout(() => {
+      // Escalating kill: SIGTERM first, SIGKILL 3s later if stuck.
+      const killPython = () => {
         try {
-          python.kill();
+          python.kill("SIGTERM");
         } catch {}
+        setTimeout(() => {
+          try {
+            if (python.exitCode === null) python.kill("SIGKILL");
+          } catch {}
+        }, 3000);
+      };
+
+      setTimeout(() => {
+        killPython();
         safeResolve({
           success: false,
           error: "Action execution timeout (15s)",
