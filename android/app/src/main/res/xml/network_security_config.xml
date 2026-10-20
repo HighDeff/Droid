@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Droid network security config.
+  The APK is a remote controller for the Droid backend, which during
+  development typically runs on a LAN address over plain HTTP
+  (e.g. http://192.168.1.50:3000). This config permits cleartext traffic so
+  the WebView can reach it. For production, serve the backend over HTTPS and
+  you can remove the cleartext permit below.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

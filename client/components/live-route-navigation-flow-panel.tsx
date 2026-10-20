@@ -39,7 +39,14 @@ export interface RouteWaypoint {
   status: "pending" | "traversing" | "completed";
 }
 
-export const LiveRouteNavigationFlowPanel: React.FC = () => {
+interface LiveRouteNavigationFlowPanelProps {
+  /** Reference frame the waypoint coordinates are expressed in. */
+  frameSize?: { width: number; height: number };
+}
+
+export const LiveRouteNavigationFlowPanel: React.FC<
+  LiveRouteNavigationFlowPanelProps
+> = ({ frameSize = { width: 1920, height: 1080 } }) => {
   const [flowPreset, setFlowPreset] = useState<
     "slow" | "natural" | "gamer" | "sprint"
   >("natural");
@@ -346,8 +353,8 @@ export const LiveRouteNavigationFlowPanel: React.FC = () => {
                   <div
                     key={wp.id}
                     style={{
-                      left: `${(wp.x / 1920) * 100}%`,
-                      top: `${(wp.y / 1080) * 100}%`,
+                      left: `${(wp.x / frameSize.width) * 100}%`,
+                      top: `${(wp.y / frameSize.height) * 100}%`,
                     }}
                     className={`absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono border shadow-lg ${
                       wp.status === "completed"
@@ -367,8 +374,8 @@ export const LiveRouteNavigationFlowPanel: React.FC = () => {
                 {/* Real Human Cursor Avatar */}
                 <div
                   style={{
-                    left: `${(cursorPosition.x / 1920) * 100}%`,
-                    top: `${(cursorPosition.y / 1080) * 100}%`,
+                    left: `${(cursorPosition.x / frameSize.width) * 100}%`,
+                    top: `${(cursorPosition.y / frameSize.height) * 100}%`,
                   }}
                   className="absolute -translate-x-1/2 -translate-y-1/2 transition-transform duration-75 pointer-events-none flex items-center gap-1.5 bg-purple-950/90 border border-purple-400 px-2 py-0.5 rounded-full text-[10px] font-mono text-purple-200 shadow-xl"
                 >

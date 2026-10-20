@@ -25,6 +25,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useFrameMapper } from "@/lib/frame-canvas";
 import {
   Card,
   CardContent,
@@ -185,6 +186,7 @@ export const GoalsManagerPanel: React.FC<GoalsManagerPanelProps> = ({
     goals[0]?.id || "",
   );
   const [filterCategory, setFilterCategory] = useState<string>("all");
+  const { frame: goalFrame, onMediaLoad } = useFrameMapper();
   const [activeView, setActiveView] = useState<"list" | "dag" | "policy">(
     "list",
   );
@@ -582,7 +584,7 @@ export const GoalsManagerPanel: React.FC<GoalsManagerPanelProps> = ({
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-mono text-cyan-400 font-bold flex items-center gap-1.5">
                       <Crosshair className="w-3.5 h-3.5" />
-                      Visual Anchor Coordinates (1920x1080)
+                      Visual Anchor Coordinates ({goalFrame.width}×{goalFrame.height})
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">
                       Normalized Screen Space
@@ -741,11 +743,13 @@ export const GoalsManagerPanel: React.FC<GoalsManagerPanelProps> = ({
                       </span>
                     </div>
 
-                    <div className="relative aspect-video w-full bg-black rounded-lg overflow-hidden border border-slate-700">
+                    <div style={{ aspectRatio: `${goalFrame.width} / ${goalFrame.height}` }}
+                      className="relative w-full bg-black rounded-lg overflow-hidden border border-slate-700">
                       {screenshotUrl ? (
                         <img
                           src={screenshotUrl}
                           alt="Target Preview"
+                          onLoad={onMediaLoad}
                           className="w-full h-full object-contain pointer-events-none"
                         />
                       ) : (
@@ -757,10 +761,10 @@ export const GoalsManagerPanel: React.FC<GoalsManagerPanelProps> = ({
                       {/* Highlighted Bounding Box for Goal Target */}
                       <div
                         style={{
-                          left: `${(selectedGoal.targetRegion.x / 1920) * 100}%`,
-                          top: `${(selectedGoal.targetRegion.y / 1080) * 100}%`,
-                          width: `${Math.max(3, (selectedGoal.targetRegion.width / 1920) * 100)}%`,
-                          height: `${Math.max(3, (selectedGoal.targetRegion.height / 1080) * 100)}%`,
+                          left: `${(selectedGoal.targetRegion.x / goalFrame.width) * 100}%`,
+                          top: `${(selectedGoal.targetRegion.y / goalFrame.height) * 100}%`,
+                          width: `${Math.max(3, (selectedGoal.targetRegion.width / goalFrame.width) * 100)}%`,
+                          height: `${Math.max(3, (selectedGoal.targetRegion.height / goalFrame.height) * 100)}%`,
                         }}
                         className="absolute border-2 border-amber-400 bg-amber-500/20 rounded shadow-[0_0_20px_rgba(245,158,11,0.6)] animate-pulse"
                       >
@@ -772,8 +776,8 @@ export const GoalsManagerPanel: React.FC<GoalsManagerPanelProps> = ({
                       {/* Center Crosshair Marker */}
                       <div
                         style={{
-                          left: `${(selectedGoal.targetCenter.x / 1920) * 100}%`,
-                          top: `${(selectedGoal.targetCenter.y / 1080) * 100}%`,
+                          left: `${(selectedGoal.targetCenter.x / goalFrame.width) * 100}%`,
+                          top: `${(selectedGoal.targetCenter.y / goalFrame.height) * 100}%`,
                         }}
                         className="absolute transform -translate-x-1/2 -translate-y-1/2"
                       >

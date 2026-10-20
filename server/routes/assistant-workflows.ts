@@ -9,6 +9,7 @@ import type {
 import { assistantStateRepository } from "../assistant-state";
 import { workflowRuntime } from "../workflow-runtime";
 import { liveEvents } from "../live-events";
+import { aiPlannerEngine } from "../ai-planner-engine";
 
 const isoDate = z.string().datetime({ offset: true });
 const itemStatus = z.enum(["pending", "in_progress", "completed", "blocked"]);
@@ -44,6 +45,9 @@ const workflowFields = z.object({
   status: z
     .enum(["active", "paused", "completed", "archived"])
     .default("active"),
+  /** Links the workflow to its exact execution plan (set automatically by
+   *  recording→workflow conversion). */
+  planId: z.string().min(1).optional(),
   operationPackIds: z.array(z.string().min(1)).max(100).default([]),
   checkpointIds: z.array(z.string().min(1)).max(100).default([]),
   repeatCount: z.number().int().min(0).max(1000).default(0),
@@ -286,7 +290,17 @@ assistantWorkflowsRouter.post("/:workflowId/run", (req, res) => {
       .status(409)
       .json({ success: false, error: "Only active workflows may run" });
   }
-  const runtime = workflowRuntime.runNow(workflow.id, sessionId);
+  // Device routing for REAL execution. When omitted the run is an honest
+  // dry-run (safe no-op executor) and the runtime reports it as such.
+  const deviceOpts =
+    req.body?.targetDevice === "android" || req.body?.targetDevice === "desktop"
+      ? {
+          targetDevice: req.body.targetDevice,
+          deviceId: req.body.deviceId ?? null,
+          frameSize: req.body.frameSize ?? null,
+        }
+      : undefined;
+  const runtime = workflowRuntime.runNow(workflow.id, sessionId, deviceOpts);
   res.status(202).json({ success: true, workflow, runtime });
 });
 
@@ -302,6 +316,107 @@ assistantWorkflowsRouter.get("/:workflowId/runtime", (req, res) => {
       .status(404)
       .json({ success: false, error: "Workflow not found" });
   res.json({ success: true, runtime: workflowRuntime.status(workflow.id) });
+});
+
+/**
+ * Live-awareness adaptation: given a FRESH perception report, re-ground the
+ * workflow's plan steps against what is actually on screen right now.
+ * Returns adapted steps plus a per-step refinement report (kept / regrounded
+ * / dropped with reasons). The client calls this before each repeat
+ * iteration so "AI repeat with live awareness" adapts to moved, changed, or
+ * vanished targets instead of blindly replaying stale coordinates.
+ */
+assistantWorkflowsRouter.post("/:workflowId/adapt-steps", (req, res) => {
+  const sessionId = sessionIdFrom(req);
+  if (!requireSession(sessionId, res)) return;
+  const workflow = assistantStateRepository.getWorkflow(
+    req.params.workflowId,
+    sessionId,
+  );
+  if (!workflow)
+    return res
+      .status(404)
+      .json({ success: false, error: "Workflow not found" });
+  const { perceptionReport } = req.body ?? {};
+  if (!perceptionReport)
+    return res
+      .status(400)
+      .json({ success: false, error: "Missing perceptionReport" });
+
+  const plans = assistantStateRepository.listPlans(sessionId);
+  const plan = workflow.planId
+    ? (assistantStateRepository.getPlan(workflow.planId, sessionId) ?? plans[0])
+    : plans[0];
+  if (!plan || !plan.steps?.length)
+    return res.status(404).json({
+      success: false,
+      error: "No executable plan found for workflow",
+    });
+
+  // Convert plan steps to the planner's SubTask shape for refinement.
+  // Coordinate-bearing actions (click) get re-grounded against fresh
+  // perception; every other action type keeps its original payload verbatim.
+  const subTasks = plan.steps.map((s) => ({
+    id: s.id,
+    title: s.title,
+    actionType:
+      s.action?.type === "click"
+        ? ("click" as const)
+        : s.action?.type === "wait"
+          ? ("wait" as const)
+          : ("click" as const),
+    targetName: s.title,
+    x: s.action?.type === "click" ? s.action.x : undefined,
+    y: s.action?.type === "click" ? s.action.y : undefined,
+    delayMs: 400,
+    status: "pending" as const,
+  }));
+
+  const { refined, report } = aiPlannerEngine.refineStepsWithFreshPerception(
+    subTasks,
+    perceptionReport,
+  );
+
+  // Map the refinement back onto plan-step actions for the client to execute.
+  // Only click coordinates are ever re-grounded; type/key/wait/screenshot/
+  // navigate-shortcut actions are returned EXACTLY as the plan defined them.
+  const adaptedSteps = refined.map((t) => {
+    const orig = plan.steps.find((s) => s.id === t.id);
+    const origAction = orig?.action;
+    let action: typeof origAction;
+    if (origAction?.type === "click") {
+      action = {
+        ...origAction,
+        x: Math.round(t.x ?? origAction.x),
+        y: Math.round(t.y ?? origAction.y),
+      };
+    } else if (origAction) {
+      action = origAction;
+    } else {
+      action = {
+        type: "click",
+        x: Math.round(t.x || 0),
+        y: Math.round(t.y || 0),
+        button: "left",
+      } as const;
+    }
+    return { stepId: t.id, title: t.title, action, original: origAction };
+  });
+
+  res.json({
+    success: true,
+    workflowId: workflow.id,
+    adaptedSteps,
+    refinement: report.map((r) => ({
+      stepId: r.step.id,
+      title: r.step.title,
+      status: r.status,
+      reason: r.reason,
+      x: r.step.x,
+      y: r.step.y,
+    })),
+    droppedCount: report.filter((r) => r.status === "dropped").length,
+  });
 });
 
 assistantWorkflowsRouter.post("/:workflowId/stop", (req, res) => {
@@ -323,9 +438,12 @@ assistantWorkflowsRouter.post("/:workflowId/stop", (req, res) => {
       schedule: { ...workflow.schedule, enabled: false },
     },
   );
+  // Real stop: cancel the in-flight execution and kill any running device
+  // process (previously this only flipped status flags).
+  const runtimeState = workflowRuntime.stop(workflow.id);
   liveEvents.publish(sessionId, "workflow.stopped", {
     workflowId: workflow.id,
-    reason: "stopped by user",
+    reason: runtimeState.stoppedReason ?? "stopped by user",
   });
   res.json({ success: true, workflow: updated });
 });

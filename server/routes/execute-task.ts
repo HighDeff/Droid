@@ -79,11 +79,31 @@ export const handleExecuteTask: RequestHandler = async (req, res) => {
       }
     }
 
+    // Escalating kill: SIGTERM first, SIGKILL 3s later if the process
+    // refuses to die (e.g. stuck inside a blocking automation call).
+    const killPython = () => {
+      try {
+        python.kill("SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        try {
+          if (python.exitCode === null) python.kill("SIGKILL");
+        } catch {}
+      }, 3000);
+    };
+
+    // If the client disconnects (user hit Esc/STOP), kill the automation
+    // immediately instead of letting it run orphaned on the device.
+    req.on("close", () => {
+      if (!responseSent) {
+        killPython();
+        responseSent = true;
+      }
+    });
+
     setTimeout(() => {
       if (!responseSent) {
-        try {
-          python.kill();
-        } catch {}
+        killPython();
         responseSent = true;
         res.json({ success: false, error: "Execute-task timeout (15s)" });
       }

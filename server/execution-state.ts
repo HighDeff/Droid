@@ -47,9 +47,19 @@ export class ExecutionStateRepository {
     { paused: boolean; cancelled: boolean }
   >();
   private readonly elementTrackers = new Map<string, RealTimeElementTracker>();
+  /**
+   * Per-execution action executors. A run that needs the REAL device
+   * executor passes it to start(); it applies to that execution only and is
+   * discarded when the execution reaches a terminal state. The shared
+   * default (safe no-op) is never mutated, so a real run can't leak into
+   * later dry-runs and concurrent runs can't race on one global executor.
+   */
+  private readonly executionExecutors = new Map<string, SafeActionExecutor>();
+  /** Cleanup hooks run when an execution is cancelled (e.g. kill device procs). */
+  private readonly cancelHooks = new Map<string, Set<() => void>>();
 
   constructor(
-    private readonly executeAction: SafeActionExecutor = defaultExecutor,
+    private executeAction: SafeActionExecutor = defaultExecutor,
     optionsOrObserve: StorageOptions | ObservationProvider = {},
     observe: ObservationProvider = async () => ({}),
     private readonly learningContext?: LearningContext,
@@ -63,6 +73,31 @@ export class ExecutionStateRepository {
   }
 
   private readonly observe: ObservationProvider;
+
+  /**
+   * Swap the action executor at runtime. Prefer passing a per-execution
+   * executor to start() instead — the global swap is kept for tests and
+   * legacy callers only.
+   */
+  setExecutor(executor: SafeActionExecutor) {
+    this.executeAction = executor;
+  }
+
+  /** Register a hook invoked when the given execution is cancelled. */
+  addCancelHook(executionId: string, hook: () => void) {
+    let set = this.cancelHooks.get(executionId);
+    if (!set) {
+      set = new Set();
+      this.cancelHooks.set(executionId, set);
+    }
+    set.add(hook);
+  }
+
+  private clearExecutionScopedState(executionId: string) {
+    this.executionExecutors.delete(executionId);
+    this.cancelHooks.delete(executionId);
+    this.elementTrackers.delete(executionId);
+  }
 
   private load() {
     this.executions = new Map(
@@ -135,11 +170,24 @@ export class ExecutionStateRepository {
     execution.status = "cancelled";
     execution.completedAt = now();
     this.addEvent(execution, "info", "Execution cancelled");
+    // Kill in-flight device work (e.g. a running Python action process).
+    for (const hook of this.cancelHooks.get(executionId) ?? []) {
+      try {
+        hook();
+      } catch (error) {
+        console.error("Cancel hook failed:", error);
+      }
+    }
+    this.clearExecutionScopedState(executionId);
     this.persist();
     return execution;
   }
 
-  async start(execution: AssistantExecution, plan: AssistantPlan) {
+  async start(
+    execution: AssistantExecution,
+    plan: AssistantPlan,
+    executor?: SafeActionExecutor,
+  ) {
     this.load();
     const storedExecution = this.executions.get(execution.id);
     if (storedExecution && storedExecution !== execution) {
@@ -151,6 +199,7 @@ export class ExecutionStateRepository {
     const control = this.controls.get(execution.id);
     if (!control) throw new Error("Execution control state not found");
     control.paused = false;
+    if (executor) this.executionExecutors.set(execution.id, executor);
     execution.status = "running";
     execution.pendingApproval = undefined;
     execution.startedAt ??= now();
@@ -191,7 +240,7 @@ export class ExecutionStateRepository {
           }
         }
 
-        let result = await this.runAction(action);
+        let result = await this.runAction(execution.id, action);
         execution.results.push(result);
         this.persist();
         if (!result.success) return this.fail(execution, result.message);
@@ -229,7 +278,7 @@ export class ExecutionStateRepository {
             const delay = Math.min(step.adaptive.retry?.backoffMs ?? 0, 5_000);
             if (delay > 0)
               await new Promise((resolve) => setTimeout(resolve, delay));
-            result = await this.runAction(action);
+            result = await this.runAction(execution.id, action);
             execution.results.push(result);
             if (!result.success) return this.fail(execution, result.message);
           }
@@ -245,6 +294,7 @@ export class ExecutionStateRepository {
     execution.status = "completed";
     execution.completedAt = now();
     this.addEvent(execution, "completed", "Execution completed");
+    this.clearExecutionScopedState(execution.id);
     this.persist();
     
     // Learn from this execution if context is provided
@@ -294,9 +344,11 @@ export class ExecutionStateRepository {
     return this.start(execution, plan);
   }
 
-  private runAction(action: AllowlistedAction) {
+  private runAction(executionId: string, action: AllowlistedAction) {
+    const executor =
+      this.executionExecutors.get(executionId) ?? this.executeAction;
     return Promise.race([
-      this.executeAction(action),
+      executor(action),
       new Promise<never>((_, reject) =>
         setTimeout(
           () => reject(new Error("Action timed out")),
@@ -421,6 +473,7 @@ export class ExecutionStateRepository {
     execution.error = error;
     execution.completedAt = now();
     this.addEvent(execution, "failed", error);
+    this.clearExecutionScopedState(execution.id);
     this.persist();
     return execution;
   }

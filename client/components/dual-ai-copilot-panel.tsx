@@ -64,6 +64,8 @@ export interface ScreenPerceptionReport {
   feedbackPosition: { x: number; y: number };
   primarySuggestion: string;
   confidence: number;
+  degraded?: boolean;
+  frameSize?: { width: number; height: number };
 }
 
 export interface AIThinkingChain {
@@ -135,6 +137,8 @@ interface DualAICopilotPanelProps {
   onTriggerDescribe: () => void;
   onTriggerPlanAndAct: () => void;
   onToggleAutonomousLoop: () => void;
+  /** Real emergency stop: aborts the loop AND any in-flight sequence. */
+  onEmergencyStop: () => void;
   onSelectElementTarget: (x: number, y: number, name: string) => void;
 }
 
@@ -150,6 +154,7 @@ export const DualAICopilotPanel: React.FC<DualAICopilotPanelProps> = ({
   onTriggerDescribe,
   onTriggerPlanAndAct,
   onToggleAutonomousLoop,
+  onEmergencyStop,
   onSelectElementTarget,
 }) => {
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>("all");
@@ -203,7 +208,13 @@ export const DualAICopilotPanel: React.FC<DualAICopilotPanelProps> = ({
               <Button
                 size="sm"
                 onClick={onTriggerPlanAndAct}
-                className="gap-1.5 text-xs border border-purple-500/50 bg-purple-950/60 hover:bg-purple-900/80 text-purple-200 font-bold shadow-md shadow-purple-950"
+                disabled={!perception}
+                title={
+                  perception
+                    ? "Plan the next action and execute it"
+                    : "Perceive the screen first (AI #1)"
+                }
+                className="gap-1.5 text-xs border border-purple-500/50 bg-purple-950/60 hover:bg-purple-900/80 text-purple-200 font-bold shadow-md shadow-purple-950 disabled:opacity-40"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-spin" />
                 Plan & Act (AI #2)
@@ -229,13 +240,13 @@ export const DualAICopilotPanel: React.FC<DualAICopilotPanelProps> = ({
                 )}
               </Button>
 
-              {/* Dedicated Red Emergency Stop Button */}
+              {/* Dedicated Red Emergency Stop Button.
+                  Unlike Pause, this aborts in-flight work via onEmergencyStop. */}
               <Button
                 size="sm"
                 variant="destructive"
-                onClick={() => {
-                  if (isAutonomousRunning) onToggleAutonomousLoop();
-                }}
+                onClick={onEmergencyStop}
+                title="Stop the autonomous loop and abort any in-flight sequence"
                 className="gap-1.5 text-xs font-bold bg-red-700 hover:bg-red-600 text-white shadow-lg shadow-red-950"
               >
                 <AlertCircle className="w-3.5 h-3.5" />
@@ -341,7 +352,19 @@ export const DualAICopilotPanel: React.FC<DualAICopilotPanelProps> = ({
                 </label>
                 {/* Filter Selector */}
                 <div className="flex gap-1">
-                  {["all", "button", "input", "captcha", "target"].map((t) => (
+                  {[
+                    "all",
+                    "button",
+                    "input",
+                    "icon",
+                    "text",
+                    "toggle",
+                    "dialog",
+                    "checkbox",
+                    "captcha",
+                    "target",
+                    "other",
+                  ].map((t) => (
                     <button
                       key={t}
                       onClick={() => setSelectedTypeFilter(t)}
@@ -374,6 +397,7 @@ export const DualAICopilotPanel: React.FC<DualAICopilotPanelProps> = ({
                             el.name,
                           )
                         }
+                        title="Click to schedule a click step at this element"
                         className="p-2 bg-slate-900/80 hover:bg-slate-800/90 rounded border border-slate-800 flex items-center justify-between text-xs cursor-pointer transition-all group"
                       >
                         <div className="flex items-center gap-2">

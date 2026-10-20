@@ -48,31 +48,13 @@ export const DrawingReflexCanvas: React.FC = () => {
     null,
   );
 
-  const [habitRules, setHabitRules] = useState<HabitReflexRule[]>([
-    {
-      id: "h1",
-      triggerEvent: "Dynamic Ad Popover Blocked Main Button",
-      learnedAlternative:
-        "Shift coordinate by +30px Y and execute escape key combo",
-      confidenceScore: 0.96,
-      timesInvoked: 14,
-    },
-    {
-      id: "h2",
-      triggerEvent: "Input Field Text Rejection on Single Type",
-      learnedAlternative: "Prepend clear_and_type with double click focus lock",
-      confidenceScore: 0.93,
-      timesInvoked: 9,
-    },
-    {
-      id: "h3",
-      triggerEvent: "Exclusion Zone Intersect Detected",
-      learnedAlternative:
-        "Auto-reroute bezier spline curve around bounding box mask",
-      confidenceScore: 0.98,
-      timesInvoked: 21,
-    },
-  ]);
+  const [habitLearning, setHabitLearning] = useState(true);
+  const [splineSmoothing, setSplineSmoothing] = useState(true);
+  const [renderExclusion, setRenderExclusion] = useState(true);
+  // Habit rules learned from YOUR drawn zones this session — starts empty,
+  // no fabricated history.
+  const [habitRules, setHabitRules] = useState<HabitReflexRule[]>([]);
+  const lastPointRef = useRef<{ x: number; y: number } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const historyRef = useRef<ImageData[]>([]);
@@ -137,6 +119,7 @@ export const DrawingReflexCanvas: React.FC = () => {
     if (drawTool === "brush" || drawTool === "eraser") {
       ctx.beginPath();
       ctx.moveTo(coords.x, coords.y);
+      lastPointRef.current = coords;
     }
   };
 
@@ -153,8 +136,17 @@ export const DrawingReflexCanvas: React.FC = () => {
       ctx.lineWidth = brushSize;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      ctx.lineTo(coords.x, coords.y);
+      if (splineSmoothing) {
+        // Smooth the hand-drawn polyline into quadratic curves.
+        const prev = lastPointRef.current ?? coords;
+        const midX = (prev.x + coords.x) / 2;
+        const midY = (prev.y + coords.y) / 2;
+        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+      } else {
+        ctx.lineTo(coords.x, coords.y);
+      }
       ctx.stroke();
+      lastPointRef.current = coords;
     } else if (drawTool === "eraser") {
       ctx.strokeStyle = "#020617";
       ctx.lineWidth = brushSize * 4;
@@ -181,20 +173,25 @@ export const DrawingReflexCanvas: React.FC = () => {
 
       ctx.strokeStyle = brushColor;
       ctx.lineWidth = 2;
-      ctx.fillStyle = `${brushColor}22`;
       ctx.strokeRect(startPos.x, startPos.y, width, height);
-      ctx.fillRect(startPos.x, startPos.y, width, height);
+      if (renderExclusion) {
+        // Highlight the avoidance bounding box.
+        ctx.fillStyle = `${brushColor}22`;
+        ctx.fillRect(startPos.x, startPos.y, width, height);
+      }
 
-      // Add as dynamic exclusion zone habit rule
-      const newRule: HabitReflexRule = {
-        id: `h-${Date.now()}`,
-        triggerEvent: `Bounding Exclusion Zone (${Math.round(startPos.x)}, ${Math.round(startPos.y)}) [${Math.round(width)}×${Math.round(height)}]`,
-        learnedAlternative:
-          "Dynamic spline diversion with 15px waypoint clearance",
-        confidenceScore: 0.99,
-        timesInvoked: 1,
-      };
-      setHabitRules((prev) => [newRule, ...prev]);
+      if (habitLearning) {
+        // Convert the drawn rectangle into an obstacle-avoidance rule.
+        const newRule: HabitReflexRule = {
+          id: `h-${Date.now()}`,
+          triggerEvent: `Bounding Exclusion Zone (${Math.round(startPos.x)}, ${Math.round(startPos.y)}) [${Math.round(width)}×${Math.round(height)}]`,
+          learnedAlternative:
+            "Dynamic spline diversion with 15px waypoint clearance",
+          confidenceScore: 0.99,
+          timesInvoked: 1,
+        };
+        setHabitRules((prev) => [newRule, ...prev]);
+      }
     }
 
     // Save history for undo
@@ -255,7 +252,7 @@ export const DrawingReflexCanvas: React.FC = () => {
             id: "habit_learning",
             label: "Auto-Learn Drawn Zones",
             type: "switch",
-            value: true,
+            value: habitLearning,
             description:
               "Convert drawn rectangles into obstacle avoidance rules",
           },
@@ -274,14 +271,14 @@ export const DrawingReflexCanvas: React.FC = () => {
             id: "spline_smoothing",
             label: "Dynamic Spline Smoothing",
             type: "switch",
-            value: true,
+            value: splineSmoothing,
             description: "Smooth hand-drawn curves into cubic beziers",
           },
           {
             id: "render_exclusion",
             label: "Render Collision Mask",
             type: "switch",
-            value: true,
+            value: renderExclusion,
             description: "Highlight avoidance bounding boxes",
           },
         ]}
@@ -295,6 +292,9 @@ export const DrawingReflexCanvas: React.FC = () => {
         ]}
         onSettingChange={(id, val) => {
           if (id === "brush_size") setBrushSize(Number(val));
+          else if (id === "habit_learning") setHabitLearning(val === true || val === "true");
+          else if (id === "spline_smoothing") setSplineSmoothing(val === true || val === "true");
+          else if (id === "render_exclusion") setRenderExclusion(val === true || val === "true");
         }}
       />
 
@@ -376,6 +376,13 @@ export const DrawingReflexCanvas: React.FC = () => {
                 </div>
 
                 <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                  {habitRules.length === 0 && (
+                    <p className="text-xs text-slate-500 font-mono">
+                      No zones learned yet — draw a rectangle with the rect
+                      tool{habitLearning ? "" : " (enable Auto-Learn first)"} to
+                      create an avoidance rule.
+                    </p>
+                  )}
                   {habitRules.map((rule) => (
                     <div
                       key={rule.id}

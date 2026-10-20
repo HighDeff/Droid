@@ -501,6 +501,9 @@ export interface AssistantWorkflow {
   name: string;
   description?: string;
   status: WorkflowStatus;
+  /** The execution plan this workflow runs. When unset, the session's
+   *  primary (first) plan is used as a legacy fallback. */
+  planId?: string;
   operationPackIds: string[];
   checkpointIds: string[];
   repeatCount: number;

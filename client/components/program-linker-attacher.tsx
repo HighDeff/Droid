@@ -135,6 +135,8 @@ export const ProgramLinkerAttacher: React.FC = () => {
   const [testProgress, setTestProgress] = useState(100);
 
   const handleRunAllTests = () => {
+    // Simulated: there is no real pixel-diff backend for these demo windows.
+    // The progress animation is honest about being a simulation.
     setIsTestRunning(true);
     setTestProgress(0);
     let p = 0;
@@ -287,6 +289,9 @@ export const ProgramLinkerAttacher: React.FC = () => {
                   <CardTitle className="text-sm font-bold text-cyan-400 flex items-center gap-2">
                     <TestTube2 className="w-4 h-4" />
                     <span>Attached Window Feature Scanner & Test Runner</span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800">
+                      DEMO DATA
+                    </span>
                   </CardTitle>
                   <CardDescription className="text-xs text-slate-300 font-mono">
                     Target:{" "}
@@ -306,8 +311,8 @@ export const ProgramLinkerAttacher: React.FC = () => {
                   >
                     <Play className="w-3.5 h-3.5" />{" "}
                     {isTestRunning
-                      ? `Running Tests (${testProgress}%)`
-                      : "Run Pixel-Diff Tests"}
+                      ? `Simulating Tests (${testProgress}%)`
+                      : "Run Pixel-Diff Tests (simulated)"}
                   </Button>
                 </div>
               </div>

@@ -17,6 +17,7 @@ import {
   Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useFrameMapper } from "@/lib/frame-canvas";
 import {
   Card,
   CardContent,
@@ -28,6 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { TabContextualSettingsBar } from "./tab-contextual-settings-bar";
+import { apiUrl } from "@/lib/api";
 
 export interface MouseRoutePoint {
   x: number;
@@ -63,6 +65,7 @@ export const ContinuousMouseRoutePlayer: React.FC<
     { x: 840, y: 440, time: 1200 },
     { x: 960, y: 520, time: 1450, is_click: true, dwell_ms: 150 },
   ]);
+  const { frame: routeFrame, onMediaLoad, toFrame } = useFrameMapper();
 
   const [statusLog, setStatusLog] = useState<string>(
     "Continuous Mouse Route Engine ready. Click and drag on canvas to record navigation routes.",
@@ -71,9 +74,7 @@ export const ContinuousMouseRoutePlayer: React.FC<
   // Record mouse points continuously as cursor moves
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isRecordingRoute) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
+    const { x, y } = toFrame(e);
 
     const now = Date.now();
     setRoutePoints((prev) => [
@@ -131,7 +132,7 @@ export const ContinuousMouseRoutePlayer: React.FC<
     );
 
     try {
-      const res = await fetch("/api/execute-task", {
+      const res = await fetch(apiUrl("/api/execute-task"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -178,7 +179,7 @@ export const ContinuousMouseRoutePlayer: React.FC<
   const generateSVGPolyline = () => {
     if (routePoints.length === 0) return "";
     return routePoints
-      .map((p) => `${(p.x / 1920) * 1000},${(p.y / 1080) * 562.5}`)
+      .map((p) => `${(p.x / routeFrame.width) * 100},${(p.y / routeFrame.height) * 100}`)
       .join(" ");
   };
 
@@ -270,7 +271,8 @@ export const ContinuousMouseRoutePlayer: React.FC<
           {/* 2D Canvas with SVG Route Display */}
           <div
             onMouseMove={handleCanvasMouseMove}
-            className={`relative w-full aspect-video bg-slate-950 rounded-xl border overflow-hidden cursor-crosshair group ${
+            style={{ aspectRatio: `${routeFrame.width} / ${routeFrame.height}` }}
+            className={`relative w-full bg-slate-950 rounded-xl border overflow-hidden cursor-crosshair group ${
               isRecordingRoute
                 ? "border-red-500 shadow-[0_0_25px_rgba(239,68,68,0.3)]"
                 : "border-slate-800"
@@ -280,7 +282,8 @@ export const ContinuousMouseRoutePlayer: React.FC<
               <img
                 src={currentLiveScreenshot}
                 alt="Live Viewport"
-                className="w-full h-full object-cover opacity-80"
+                onLoad={onMediaLoad}
+                className="w-full h-full object-contain opacity-80 pointer-events-none"
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-slate-400">
@@ -291,7 +294,8 @@ export const ContinuousMouseRoutePlayer: React.FC<
             {/* Glowing Polyline Route Overlay */}
             <svg
               className="absolute inset-0 w-full h-full pointer-events-none"
-              viewBox="0 0 1000 562.5"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
             >
               <defs>
                 <linearGradient
@@ -339,9 +343,10 @@ export const ContinuousMouseRoutePlayer: React.FC<
                 return (
                   <circle
                     key={idx}
-                    cx={(pt.x / 1920) * 1000}
-                    cy={(pt.y / 1080) * 562.5}
-                    r={isStart || isEnd ? 6 : 2.5}
+                    cx={(pt.x / routeFrame.width) * 100}
+                    cy={(pt.y / routeFrame.height) * 100}
+                    r={isStart || isEnd ? 1.6 : 0.7}
+                    vectorEffect="non-scaling-stroke"
                     fill={isStart ? "#22c55e" : isEnd ? "#ef4444" : "#06b6d4"}
                     stroke="#ffffff"
                     strokeWidth={isStart || isEnd ? 1.5 : 0.5}
@@ -354,8 +359,8 @@ export const ContinuousMouseRoutePlayer: React.FC<
             {isPlayingRoute && routePoints[currentPlaybackIndex] && (
               <div
                 style={{
-                  left: `${(routePoints[currentPlaybackIndex].x / 1920) * 100}%`,
-                  top: `${(routePoints[currentPlaybackIndex].y / 1080) * 100}%`,
+                  left: `${(routePoints[currentPlaybackIndex].x / routeFrame.width) * 100}%`,
+                  top: `${(routePoints[currentPlaybackIndex].y / routeFrame.height) * 100}%`,
                 }}
                 className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none z-30 flex flex-col items-center animate-pulse"
               >
