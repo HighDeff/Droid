@@ -72,8 +72,17 @@ export class AIPlannerActorEngine {
     action: SubTask;
     success: boolean;
     verified: boolean;
+    feedback?: string;
     timestamp: number;
   }> = [];
+  // Abandonment tracking for the AI Decide loop. "User activity" means a
+  // person driving the app again (a fresh plan / synthesize request routed
+  // through noteUserActivity), NOT the loop's own outcome reports: if
+  // machine-generated reports refreshed this clock, checkAbandonment could
+  // never fire and an unattended loop would run forever.
+  private lastUserActivityAt = Date.now();
+  private outcomesSinceUserActivity = 0;
+  private progressSinceUserActivity = false;
 
   constructor() {
     this.initializeDefaultGoals();
@@ -353,6 +362,65 @@ IMPORTANT: Output ONLY the raw JSON without code blocks or extra text.`;
         retryStrategy: "Retry with +10px offset",
       },
       statusSummary: `Targeting: ${action.title}`,
+    };
+  }
+
+  /** Mark a genuine user interaction: resets the abandonment counters. */
+  noteUserActivity(): void {
+    this.lastUserActivityAt = Date.now();
+    this.outcomesSinceUserActivity = 0;
+    this.progressSinceUserActivity = false;
+  }
+
+  /**
+   * Record one loop-executed action's outcome into the learning history
+   * and the abandonment counters. Deliberately does NOT count as user
+   * activity — the loop reporting on itself is not the user returning.
+   */
+  recordOutcome(
+    action: SubTask,
+    success: boolean,
+    verified: boolean,
+    feedback?: string,
+  ): void {
+    this.actionHistory.push({
+      action,
+      success,
+      verified,
+      feedback,
+      timestamp: Date.now(),
+    });
+    if (this.actionHistory.length > 100) {
+      this.actionHistory.splice(0, this.actionHistory.length - 100);
+    }
+    this.outcomesSinceUserActivity += 1;
+    if (success && verified) {
+      this.progressSinceUserActivity = true;
+    }
+  }
+
+  /**
+   * Abandonment verdict for the AI Decide loop: wrap up when at least
+   * `maxIdleCycles` outcomes have been reported since the last user
+   * interaction and none of them made verified progress.
+   */
+  checkAbandonment(maxIdleCycles = 6): {
+    abandoned: boolean;
+    idleCycles: number;
+    wrapUpSummary: string;
+  } {
+    const idleCycles = this.outcomesSinceUserActivity;
+    const abandoned =
+      idleCycles >= Math.max(1, maxIdleCycles) &&
+      !this.progressSinceUserActivity;
+    const recent = this.actionHistory.slice(-idleCycles);
+    const verifiedCount = recent.filter((entry) => entry.verified).length;
+    return {
+      abandoned,
+      idleCycles,
+      wrapUpSummary: abandoned
+        ? `Wrapped up after ${idleCycles} actions with no verified progress and no user input since ${new Date(this.lastUserActivityAt).toISOString()} (${verifiedCount} of the last ${recent.length} actions verified).`
+        : "",
     };
   }
 

@@ -16,7 +16,15 @@ const now = () => new Date().toISOString();
 const id = (prefix: string) =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-export const ACTION_TIMEOUT_MS = 5_000;
+// Per-action budget. Must stay ABOVE the device executor's worst case
+// (device-action-executor.ts: PYTHON_TIMEOUT_MS 25s + 2s SIGKILL grace +
+// IPC slack): at the old 5s, any real device action that legitimately
+// took longer — screenshots with vision analysis, long typing, app waits —
+// was declared "Action timed out" while its Python process kept running
+// against the device for up to ~27s, orphaned from the plan that had
+// already failed/retried around it. Even plain `wait` actions longer
+// than 5s could never succeed.
+export const ACTION_TIMEOUT_MS = 30_000;
 export const EXECUTION_TIMEOUT_MS = 30_000;
 
 export type SafeActionExecutor = (
@@ -344,18 +352,25 @@ export class ExecutionStateRepository {
     return this.start(execution, plan);
   }
 
-  private runAction(executionId: string, action: AllowlistedAction) {
+  private async runAction(executionId: string, action: AllowlistedAction) {
     const executor =
       this.executionExecutors.get(executionId) ?? this.executeAction;
-    return Promise.race([
-      executor(action),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error("Action timed out")),
-          ACTION_TIMEOUT_MS,
-        ),
-      ),
-    ]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        executor(action),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Action timed out")),
+            ACTION_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      // Don't leave the losing timer pending after the executor wins —
+      // at a 30s budget it would otherwise hold the event loop open.
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async captureAndVerify(

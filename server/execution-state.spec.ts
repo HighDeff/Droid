@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AssistantPlan } from "@shared/assistant";
-import { ExecutionStateRepository } from "./execution-state";
+import {
+  ACTION_TIMEOUT_MS,
+  ExecutionStateRepository,
+} from "./execution-state";
 import { allowlistedActionSchema } from "./routes/assistant-execution";
 
 const plan = (
@@ -160,4 +163,25 @@ describe("allowlisted execution", () => {
     expect(execution.status).toBe("awaiting_approval");
     expect(execution.pendingApproval?.reason).toContain("unavailable");
   });
+
+  it("gives a slow-but-legitimate action room to finish instead of timing it out at 5s", async () => {
+    // Regression guard: the device executor's Python budget is 25s plus a
+    // 2s SIGKILL grace, so the per-action race must allow more than that —
+    // at the old 5s budget this 6s action was declared timed out while its
+    // process kept running against the device.
+    expect(ACTION_TIMEOUT_MS).toBeGreaterThan(25_000 + 2_000);
+    const repository = new ExecutionStateRepository(
+      async (action) => {
+        await new Promise((resolve) => setTimeout(resolve, 6_000));
+        return { actionType: action.type, success: true, message: "slow ok" };
+      },
+      async () => ({}),
+    );
+    const execution = repository.create(plan({ type: "click", x: 1, y: 2 }));
+    const finished = await repository.start(
+      execution,
+      plan({ type: "click", x: 1, y: 2 }),
+    );
+    expect(finished.status).toBe("completed");
+  }, 15_000);
 });

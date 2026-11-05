@@ -11,6 +11,11 @@ import type { AssistantPlan, AssistantExecution } from "@shared/assistant";
 
 type RuntimeState = {
   iteration: number;
+  /** Auto-retries already spent on the current iteration. Retries re-run
+   * the SAME iteration, so they live outside the repeat budget: counting
+   * them against `iteration` made the retry unreachable whenever
+   * repeatCount was 1 (the repeat-limit guard rejected the retry call). */
+  retries: number;
   running: boolean;
   lastRunAt?: string;
   nextRunAt?: string;
@@ -30,11 +35,12 @@ const MAX_ITERATIONS = 10000; // Support "run 500 times" scenarios
 const intervalMs = 5_000;
 
 const stateFor = (workflowId: string) => {
-  const current = runtime.get(workflowId) ?? { 
-    iteration: 0, 
-    running: false, 
-    successCount: 0, 
-    failureCount: 0 
+  const current = runtime.get(workflowId) ?? {
+    iteration: 0,
+    retries: 0,
+    running: false,
+    successCount: 0,
+    failureCount: 0
   };
   runtime.set(workflowId, current);
   return current;
@@ -69,26 +75,33 @@ const runWorkflow = async (
   // counters.
   if (manual && !isRetry) {
     state.iteration = 0;
+    state.retries = 0;
     state.successCount = 0;
     state.failureCount = 0;
     state.stoppedReason = undefined;
   }
 
-  if (state.running || state.iteration >= limit) {
-    if (state.iteration >= limit) {
-      state.stoppedReason = "repeat limit reached";
-      liveEvents.publish(sessionId, "workflow.stopped", {
-        workflowId,
-        reason: state.stoppedReason,
-        totalIterations: state.iteration,
-        successRate: state.successCount / state.iteration,
-      });
-    }
+  if (state.running) return;
+  // The repeat limit gates NEW iterations only. A retry re-runs the
+  // current iteration and must not be rejected by it — with the old
+  // combined guard, any workflow with repeatCount 1 could never retry:
+  // iteration had already reached the limit when the retry call arrived.
+  if (!isRetry && state.iteration >= limit) {
+    state.stoppedReason = "repeat limit reached";
+    liveEvents.publish(sessionId, "workflow.stopped", {
+      workflowId,
+      reason: state.stoppedReason,
+      totalIterations: state.iteration,
+      successRate: state.successCount / state.iteration,
+    });
     return;
   }
-  
+
   state.running = true;
-  state.iteration += 1;
+  if (!isRetry) {
+    state.iteration += 1;
+    state.retries = 0;
+  }
   state.lastRunAt = new Date().toISOString();
   
   liveEvents.publish(sessionId, "workflow.iteration.started", {
@@ -187,8 +200,11 @@ const runWorkflow = async (
       // Implement automatic retry with adaptation. The running flag must be
       // cleared first — otherwise the recursive call sees running=true and
       // exits immediately, silently dropping the retry. Never retry after a
-      // manual stop: the user asked the device to halt.
-      if (state.failureCount < 3 && !state.stoppedReason) { // Auto-retry up to 3 times
+      // manual stop: the user asked the device to halt. The retry budget is
+      // per-iteration (state.retries): up to 3 attempts per iteration,
+      // independent of the workflow's repeatCount.
+      if (state.retries < 2 && !state.stoppedReason) {
+        state.retries += 1;
         state.running = false;
         await new Promise(resolve => setTimeout(resolve, adaptiveDelay(state.iteration, 2000)));
         return runWorkflow(workflowId, sessionId, deviceOpts, manual, true); // Retry same iteration
@@ -276,6 +292,7 @@ export const workflowRuntime = {
   setRepeatCount(workflowId: string, count: number) {
     const state = stateFor(workflowId);
     state.iteration = 0; // Reset iteration when changing repeat count
+    state.retries = 0;
     state.successCount = 0;
     state.failureCount = 0;
     runtime.set(workflowId, state);
