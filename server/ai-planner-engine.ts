@@ -66,6 +66,20 @@ export interface PlannerActDecision {
   statusSummary: string;
 }
 
+/** Purpose hypothesis for step synthesis when the user gave no objective. */
+export interface PurposeHypothesis {
+  summary: string;
+  confidence: number;
+  basis: string[];
+}
+
+/** Per-step outcome of re-grounding a plan against fresh perception. */
+export interface StepRefinement {
+  step: SubTask;
+  status: "kept" | "regrounded" | "dropped";
+  reason: string;
+}
+
 export class AIPlannerActorEngine {
   private activeGoals: GoalNode[] = [];
   private actionHistory: Array<{
@@ -125,6 +139,12 @@ export class AIPlannerActorEngine {
     userObjective?: string,
     endpoint = "https://remote.quantumpass.io/ollama/api/chat",
     model = "qwen2.5vl:7b",
+    context?: {
+      recentActions?: string[];
+      appTab?: string;
+      existingSteps?: unknown;
+      sessionId?: string;
+    },
   ): Promise<PlannerActDecision> {
     const systemPrompt = `You are an elite Autonomous AI Planner and Action Synthesizer.
 You receive a Vision Perception Report of the active user desktop/application screen.
@@ -198,7 +218,10 @@ IMPORTANT: Output ONLY the raw JSON without code blocks or extra text.`;
 - Suggested Focus Point: (${perception.feedbackPosition.x}, ${perception.feedbackPosition.y})
 - Detected Elements (${perception.elements.length}): ${JSON.stringify(perception.elements.slice(0, 8))}
 - User High-Level Objective: ${userObjective || "Automatically navigate, interact, and solve any challenges on screen"}
-- Current Active Goals: ${JSON.stringify(this.activeGoals.map((g) => ({ title: g.title, status: g.status })))}`;
+- Current Active Goals: ${JSON.stringify(this.activeGoals.map((g) => ({ title: g.title, status: g.status })))}${context ? `
+- App Tab: ${context.appTab || "unknown"}
+- Recent Actions: ${context.recentActions?.length ? context.recentActions.join(" | ") : "none"}
+- Existing Steps Already Planned: ${Array.isArray(context.existingSteps) ? context.existingSteps.length : 0} (do not repeat completed work; build on these)` : ""}`;
 
     try {
       const payload = {
@@ -422,6 +445,183 @@ IMPORTANT: Output ONLY the raw JSON without code blocks or extra text.`;
         ? `Wrapped up after ${idleCycles} actions with no verified progress and no user input since ${new Date(this.lastUserActivityAt).toISOString()} (${verifiedCount} of the last ${recent.length} actions verified).`
         : "",
     };
+  }
+
+  /**
+   * Form a purpose hypothesis from perception alone, for the case where
+   * the user pressed RUN with no objective ("auto"). Deterministic and
+   * honest about its basis: the summary names the window and the most
+   * prominent interactive element instead of inventing a goal.
+   */
+  inferPurpose(
+    perception: ScreenPerceptionReport,
+    context?: { recentActions?: string[]; appTab?: string },
+  ): PurposeHypothesis {
+    const basis: string[] = [];
+    if (perception.degraded) {
+      return {
+        summary:
+          "Perception degraded — re-scan the screen before deriving a purpose",
+        confidence: 0,
+        basis: ["perception report is degraded"],
+      };
+    }
+    const interactive = perception.elements.filter((el) => el.interactive);
+    const top = [...interactive].sort((a, b) => b.confidence - a.confidence)[0];
+    if (perception.activeWindow) basis.push(`window: ${perception.activeWindow}`);
+    if (context?.appTab) basis.push(`app tab: ${context.appTab}`);
+    if (top) basis.push(`primary element: ${top.name} (${top.type})`);
+    if (perception.primarySuggestion)
+      basis.push(`vision suggestion: ${perception.primarySuggestion}`);
+    if (context?.recentActions?.length)
+      basis.push(`recent actions: ${context.recentActions.slice(0, 3).join(", ")}`);
+
+    const summary = top
+      ? `Work with "${top.name}" in ${perception.activeWindow || "the current window"} — ${perception.screenDescription.slice(0, 120)}`
+      : `Observe and navigate ${perception.activeWindow || "the current screen"} — ${perception.screenDescription.slice(0, 120)}`;
+    return {
+      summary,
+      confidence: top ? Math.min(0.9, Math.max(0.3, top.confidence)) : 0.3,
+      basis,
+    };
+  }
+
+  /**
+   * Derive executable steps from the elements on screen, ordered toward
+   * the purpose: elements whose names match purpose keywords come first,
+   * then remaining interactive elements by confidence. Only clicks and a
+   * leading settle-wait are emitted — typing is never synthesized, because
+   * there is no honest source for the text.
+   */
+  synthesizeSteps(
+    perception: ScreenPerceptionReport,
+    purpose: PurposeHypothesis,
+  ): SubTask[] {
+    if (perception.degraded || perception.elements.length === 0) {
+      return [
+        {
+          id: "synth_wait",
+          title: "Watching: screen not readable yet — re-scan before acting",
+          actionType: "wait",
+          delayMs: 800,
+          status: "pending",
+        },
+      ];
+    }
+    const keywords = purpose.summary
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 3);
+    const matchesPurpose = (name: string) =>
+      keywords.some((k) => name.toLowerCase().includes(k));
+    const interactive = perception.elements
+      .filter((el) => el.interactive)
+      .sort((a, b) => {
+        const matchDelta =
+          Number(matchesPurpose(b.name)) - Number(matchesPurpose(a.name));
+        return matchDelta !== 0 ? matchDelta : b.confidence - a.confidence;
+      })
+      .slice(0, 6);
+    return interactive.map((el, i) => ({
+      id: `synth_${i + 1}`,
+      title: `${el.type === "input" ? "Focus" : "Click"} ${el.name}`,
+      actionType: "click" as const,
+      targetName: el.name,
+      x: Math.round(el.center.x),
+      y: Math.round(el.center.y),
+      delayMs: 500,
+      status: "pending" as const,
+    }));
+  }
+
+  /**
+   * Re-ground plan steps against a FRESH perception report (live-aware
+   * repeats): click steps are matched to detected elements by target name
+   * and moved to the element's current center; everything else is kept
+   * verbatim. A click step with no coordinates and no matching element
+   * has nothing executable left and is dropped — with the reason recorded
+   * in the report either way.
+   */
+  refineStepsWithFreshPerception(
+    steps: SubTask[],
+    perception: ScreenPerceptionReport,
+  ): { refined: SubTask[]; report: StepRefinement[] } {
+    const refined: SubTask[] = [];
+    const report: StepRefinement[] = [];
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const findMatch = (step: SubTask) => {
+      const needle = norm(step.targetName || step.title);
+      if (!needle) return undefined;
+      const candidates = perception.elements.filter((el) => {
+        const name = norm(el.name);
+        return name && (name.includes(needle) || needle.includes(name));
+      });
+      if (!candidates.length) return undefined;
+      if (step.x === undefined || step.y === undefined) return candidates[0];
+      return candidates.sort(
+        (a, b) =>
+          Math.hypot(a.center.x - step.x!, a.center.y - step.y!) -
+          Math.hypot(b.center.x - step.x!, b.center.y - step.y!),
+      )[0];
+    };
+
+    for (const step of steps) {
+      if (perception.degraded) {
+        refined.push(step);
+        report.push({
+          step,
+          status: "kept",
+          reason: "perception degraded — original step kept unverified",
+        });
+        continue;
+      }
+      if (step.actionType !== "click") {
+        refined.push(step);
+        report.push({
+          step,
+          status: "kept",
+          reason: "non-click action kept verbatim",
+        });
+        continue;
+      }
+      const match = findMatch(step);
+      if (!match) {
+        if (step.x === undefined || step.y === undefined) {
+          report.push({
+            step,
+            status: "dropped",
+            reason: `target "${step.targetName || step.title}" not found in fresh perception and the step has no coordinates to fall back on`,
+          });
+        } else {
+          refined.push(step);
+          report.push({
+            step,
+            status: "kept",
+            reason: `target "${step.targetName || step.title}" not identified in fresh perception — original coordinates retained`,
+          });
+        }
+        continue;
+      }
+      const moved =
+        step.x === undefined || step.y === undefined
+          ? Infinity
+          : Math.hypot(match.center.x - step.x, match.center.y - step.y);
+      const regrounded: SubTask = {
+        ...step,
+        x: Math.round(match.center.x),
+        y: Math.round(match.center.y),
+      };
+      refined.push(regrounded);
+      report.push({
+        step: regrounded,
+        status: moved > 4 ? "regrounded" : "kept",
+        reason:
+          moved > 4
+            ? `re-grounded to "${match.name}" at (${regrounded.x}, ${regrounded.y})`
+            : `matched "${match.name}" at its current position`,
+      });
+    }
+    return { refined, report };
   }
 
   getGoals(): GoalNode[] {

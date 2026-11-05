@@ -76,6 +76,8 @@ interface ClickSequenceRegisterProps {
   onMoveStep: (id: string, direction: "up" | "down") => void;
   onClearSequence: () => void;
   onSelectStep: (id: string) => void;
+  /** Replace the whole sequence with imported steps (JSON file import). */
+  onImportSteps: (steps: SequenceStep[]) => void;
 }
 
 export const ClickSequenceRegister: React.FC<ClickSequenceRegisterProps> = ({
@@ -94,6 +96,7 @@ export const ClickSequenceRegister: React.FC<ClickSequenceRegisterProps> = ({
   onMoveStep,
   onClearSequence,
   onSelectStep,
+  onImportSteps,
 }) => {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -193,9 +196,10 @@ export const ClickSequenceRegister: React.FC<ClickSequenceRegisterProps> = ({
         try {
           const parsed = JSON.parse(event.target?.result as string);
           if (Array.isArray(parsed)) {
-            // Clear existing and import as new sequence - use onAddStep via direct DOM workaround: create temporary sequence via multiple onUpdateStep calls is broken,
-            // so we store to localStorage and reload
-            const normalized = parsed
+            // Replace the sequence through the parent's onImportSteps —
+            // the previous implementation stashed the steps in
+            // localStorage and reloaded the page, losing session state.
+            const normalized: SequenceStep[] = parsed
               .slice(0, 50)
               .map((step: any, idx: number) => ({
                 id: step.id || `step_${Date.now()}_${idx}`,
@@ -209,22 +213,7 @@ export const ClickSequenceRegister: React.FC<ClickSequenceRegisterProps> = ({
                 keyPayload: step.keyPayload || "enter",
                 status: "pending" as const,
               }));
-            // Directly replace via localStorage then reload - fallback: iteratively add via onAddStep + update
-            // Use parent-provided clear + add pattern: first clear
-            onClearSequence();
-            setTimeout(() => {
-              normalized.forEach((s: SequenceStep) => {
-                // Use the exposed global add via custom event: we directly push via onUpdateStep with new id after clear, then update
-                // Simpler: use fetch to store and force parent to reload from localStorage
-                try {
-                  localStorage.setItem(
-                    "unified_sequence",
-                    JSON.stringify(normalized),
-                  );
-                  window.location.reload();
-                } catch {}
-              });
-            }, 100);
+            onImportSteps(normalized);
           } else if (parsed.frames || parsed.slides) {
             alert(
               "This looks like a Pack/Layer file, not a sequence. Use Pack Builder import.",
