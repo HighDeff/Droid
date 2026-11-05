@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launch splash background referenced by AppTheme.NoActionBarLaunch.
+     The Capacitor template ships density PNGs here; they were never
+     committed, so the build failed resource linking. A plain drawable
+     in the launcher background colour keeps the launch screen clean
+     and works on every API level. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/ic_launcher_background" />
+</shape>
