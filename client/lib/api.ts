@@ -57,3 +57,33 @@ export function apiUrl(path: string): string {
   const normalized = path.startsWith("/") ? path : `/${path}`;
   return base ? `${base}${normalized}` : normalized;
 }
+
+/**
+ * JSON request through apiUrl(): resolves the parsed response body and
+ * throws an Error carrying the server's own error text (or the HTTP
+ * status) when the request fails, so callers can show `e.message`.
+ * A 200 response is returned as-is, including `{ success: false }`
+ * payloads some endpoints use as data — callers handle those.
+ */
+export async function apiRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await fetch(apiUrl(path), { ...init, headers });
+  const data = (await res.json().catch(() => null)) as {
+    error?: string;
+    message?: string;
+  } | null;
+  if (!res.ok) {
+    throw new Error(
+      data?.error ||
+        data?.message ||
+        `Request failed: ${res.status} ${res.statusText} (${path})`,
+    );
+  }
+  return data as T;
+}
